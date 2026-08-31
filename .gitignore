@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+testbench/out/
+*.egg-info/
+.pytest_cache/
+webapp/results/
