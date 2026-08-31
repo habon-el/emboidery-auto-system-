@@ -6,6 +6,7 @@ from src.params.presets import get_preset
 from src.pathing.order import order_by_color_then_distance
 from src.regions.pipeline import load_and_extract_regions
 from src.regions.scale import scale_region_set
+from src.regions.scope import apply_findings, check_min_feature_size
 from src.report import write_and_report
 from src.stitches.build import build_blocks_for_region
 from src.stitches.model import StitchBlock, StitchPlan
@@ -38,6 +39,17 @@ def digitize_image(input_path: str, fabric_name: str, out_stem: str,
     region_set = load_and_extract_regions(input_path, strict=not force)
     region_set, scale_warnings = scale_region_set(region_set, target_width_mm, target_height_mm)
     warnings: list[str] = list(region_set.warnings) + scale_warnings
+
+    if target_width_mm or target_height_mm:
+        # The pre-scale minimum-cap-height check (inside
+        # load_and_extract_regions) only guarantees the *source* was in
+        # scope -- shrinking it afterward via --width-mm/--height-mm can
+        # take otherwise-fine text below the stitchable minimum with
+        # nothing else re-checking it. Re-run the same check on the
+        # scaled geometry so a shrink-to-too-small still gets caught
+        # (or forced-past-with-a-warning, exactly like the original check).
+        heights_mm = [r.polygon.bounds[3] - r.polygon.bounds[1] for r in region_set.regions]
+        apply_findings([check_min_feature_size(heights_mm)], warnings, strict=not force)
 
     all_blocks: list[StitchBlock] = []
     classifications = []

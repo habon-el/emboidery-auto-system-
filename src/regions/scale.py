@@ -34,11 +34,20 @@ def scale_region_set(region_set: RegionSet, target_width_mm: float | None = None
     """
     if not target_width_mm and not target_height_mm:
         return region_set, []
+    if target_width_mm is not None and target_width_mm <= 0:
+        raise ValueError(f"target_width_mm must be positive, got {target_width_mm}")
+    if target_height_mm is not None and target_height_mm <= 0:
+        raise ValueError(f"target_height_mm must be positive, got {target_height_mm}")
     if not region_set.regions:
         return region_set, []
 
     minx, miny, maxx, maxy = _content_bounds(region_set.regions)
     content_width, content_height = maxx - minx, maxy - miny
+    if content_width <= 0 or content_height <= 0:
+        raise ValueError(
+            "Can't resize: the artwork's content bounding box is degenerate "
+            f"({content_width}x{content_height}mm) -- likely a single "
+            "zero-area or zero-height region.")
 
     warnings: list[str] = []
     if target_width_mm and target_height_mm:
