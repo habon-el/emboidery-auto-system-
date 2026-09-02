@@ -177,6 +177,27 @@ python -m webapp.app
 
 Everything runs on your machine; nothing is uploaded anywhere else.
 
+### Verifying an update (Windows + Linux)
+
+If you're working across both a Windows machine and a Linux machine,
+`scripts/verify.sh` (Linux/macOS) and `scripts\verify.bat` (Windows,
+double-click it or run from cmd) are the same one-command routine on
+each: pull the latest code, install/update dependencies, run the full
+test suite, then start the web UI and open it in your browser. One
+command, same result on either machine -- if it opens the browser, the
+update is good; if a test fails, it stops there and tells you before
+anything launches.
+
+```bash
+# Linux/macOS
+./scripts/verify.sh
+```
+
+```bat
+:: Windows
+scripts\verify.bat
+```
+
 ### Tests
 
 ```bash
