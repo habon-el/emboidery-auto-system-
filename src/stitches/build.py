@@ -12,8 +12,13 @@ from src.stitches.underlay import fill_underlay, satin_centerline_underlay
 
 
 def build_blocks_for_region(region: Region, classification: Classification,
-                             fabric: FabricPreset, border_width_mm: float = 0.0
+                             fabric: FabricPreset, border_width_mm: float = 0.0,
+                             include_underlay: bool = True
                              ) -> list[StitchBlock]:
+    """include_underlay=False skips the underlay pass entirely -- used
+    by the manual-review correction workflow (src/review/corrections.py)
+    when a human has explicitly turned underlay off for one region;
+    every other caller leaves it at the default (on)."""
     color, eid = region.color_index, region.region_id
     medial = classification.medial
 
@@ -24,7 +29,7 @@ def build_blocks_for_region(region: Region, classification: Classification,
     if classification.stitch_type == SATIN:
         rail_a, rail_b = medial.rails()
         blocks = []
-        if fabric.satin_underlay:
+        if include_underlay and fabric.satin_underlay:
             underlay_pts = satin_centerline_underlay(
                 rail_a, rail_b, fabric.running_stitch_length_mm)
             blocks.append(StitchBlock(UNDERLAY_SATIN, underlay_pts, color, eid))
@@ -37,12 +42,25 @@ def build_blocks_for_region(region: Region, classification: Classification,
         return blocks
 
     # FILL
-    underlay_pts = fill_underlay(
-        region.polygon, fabric.fill_underlay_inset_mm, fabric.running_stitch_length_mm)
+    blocks = []
+    if include_underlay:
+        underlay_pts = fill_underlay(
+            region.polygon, fabric.fill_underlay_inset_mm, fabric.running_stitch_length_mm)
+        blocks.append(StitchBlock(UNDERLAY_RUN, underlay_pts, color, eid))
+
     fill_runs = generate_fill(
         region.polygon, classification.angle_deg,
         fabric.fill_row_spacing_mm, fabric.fill_stitch_length_mm)
-    blocks = [StitchBlock(UNDERLAY_RUN, underlay_pts, color, eid)]
+    if region.texture_zone:
+        # A second pass at 90 degrees cross-hatches the fill, giving a
+        # texture-flagged region (src/regions/texture.py) a visually
+        # distinct look instead of sewing it exactly like a flat block.
+        # Wider spacing on this second pass keeps total density from
+        # roughly doubling -- see the fabric-density "don't over-stitch"
+        # notes in src/params/presets.py.
+        fill_runs = fill_runs + generate_fill(
+            region.polygon, classification.angle_deg + 90,
+            fabric.fill_row_spacing_mm * 1.6, fabric.fill_stitch_length_mm)
     blocks.extend(StitchBlock(FILL, run, color, eid) for run in fill_runs)
     if border_width_mm > 0:
         blocks.extend(build_border_blocks(

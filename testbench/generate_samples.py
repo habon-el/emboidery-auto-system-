@@ -106,6 +106,77 @@ def make_out_of_scope_smalltext():
     save(img, "out_of_scope_smalltext.png")
 
 
+def make_illustration_badge():
+    """Multi-region illustration fixture (Multi-Region Illustration
+    Digitization milestone): a layered badge with a true hole (the
+    ring cut through to the disc under it), a thin line-art swoosh, a
+    texture-zone patch, and 6 source colors -- two near-duplicate pairs
+    that should perceptually reduce to fewer selected thread matches."""
+    import math
+
+    w, h = mm(60), mm(78)
+    img = Image.new("RGB", (w, h), "white")
+    draw = ImageDraw.Draw(img)
+    cx, cy = w / 2, mm(30)
+
+    navy = (28, 63, 110)
+    navy_dup = (29, 64, 111)    # near-duplicate of navy -- should merge
+    gold = (210, 160, 10)
+    gold_dup = (212, 162, 12)   # near-duplicate of gold -- should merge
+    crimson = (180, 40, 40)
+    teal = (20, 130, 120)
+
+    # Outer badge disc.
+    r_outer = mm(24)
+    draw.ellipse([cx - r_outer, cy - r_outer, cx + r_outer, cy + r_outer], fill=navy)
+
+    # Ring with a true hole cut through to the disc underneath.
+    r_ring_out, r_ring_in = mm(19), mm(13)
+    draw.ellipse([cx - r_ring_out, cy - r_ring_out, cx + r_ring_out, cy + r_ring_out], fill=gold)
+    draw.ellipse([cx - r_ring_in, cy - r_ring_in, cx + r_ring_in, cy + r_ring_in], fill=navy_dup)
+
+    # Center star, sitting inside the hole.
+    def star_points(r_o, r_i, n=5, rotation=-90):
+        pts = []
+        for i in range(n * 2):
+            r = r_o if i % 2 == 0 else r_i
+            angle = math.radians(rotation + i * 360 / (n * 2))
+            pts.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
+        return pts
+
+    draw.polygon(star_points(mm(9), mm(3.5)), fill=crimson)
+
+    # Thin line-art swoosh, clearly separate from the disc (not touching
+    # or fusing with it) so it stays its own thin element rather than
+    # welding into one blob with the ring's gold fill.
+    swoosh_y = cy + r_outer + mm(8)
+    swoosh = []
+    for i in range(60):
+        t = i / 59
+        x = cx - r_outer * 0.9 + t * r_outer * 1.8
+        y = swoosh_y + mm(4) * math.sin(t * math.pi * 2.2)
+        swoosh.append((x, y))
+    draw.line(swoosh, fill=gold_dup, width=max(1, mm(0.8)), joint="curve")
+
+    # Fourth flat color (teal): rounds out the "6 source colors" set.
+    # An earlier version of this fixture tried to also make this patch
+    # double as a texture zone by adding pixel-level shading -- dropped
+    # after tuning showed a real, inherent conflict on a clean synthetic
+    # PNG: shading strong enough for src/regions/texture.py's local-
+    # variance detector to register also crosses the color-reduction
+    # merge threshold, which fragments the patch into slivers the
+    # area-noise-floor filter then (correctly) drops. A real photographed
+    # or scanned texture has that variance already baked in at a scale a
+    # clean vector-drawn PNG doesn't reproduce without also faking
+    # quantization noise. Texture-zone detection itself is covered
+    # directly by tests/test_texture.py's synthetic arrays instead.
+    patch_cx, patch_cy, patch_r = cx, cy - r_outer * 0.82, mm(6)
+    draw.ellipse([patch_cx - patch_r, patch_cy - patch_r,
+                  patch_cx + patch_r, patch_cy + patch_r], fill=teal)
+
+    save(img, "illustration_badge.png")
+
+
 def make_logo_svg():
     svg = """<svg xmlns="http://www.w3.org/2000/svg" width="70mm" height="40mm" viewBox="0 0 700 400">
   <rect x="0" y="0" width="700" height="400" fill="#ffffff"/>
@@ -127,6 +198,7 @@ def main():
     make_text_sample()
     make_out_of_scope_smalltext()
     make_logo_svg()
+    make_illustration_badge()
 
 
 if __name__ == "__main__":

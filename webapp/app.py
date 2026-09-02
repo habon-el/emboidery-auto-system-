@@ -16,9 +16,12 @@ import uuid
 from flask import Flask, abort, request, send_from_directory
 from werkzeug.utils import secure_filename
 
+from src.jobs import JobSpec, has_job_spec, load_job_spec, save_job_spec
 from src.params.presets import PRESETS
 from src.pipeline import digitize_image
 from src.regions.model import DigitizeScopeError
+from src.review.corrections import CorrectionValidationError, parse_correction_form
+from src.review.rebuild import rebuild_job
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RESULTS_DIR = os.path.join(BASE_DIR, "results")
@@ -87,6 +90,26 @@ def _page(body: str) -> str:
   .thread-dot {{ display: inline-block; width: 10px; height: 10px; border-radius: 3px;
                  margin-right: 5px; vertical-align: -1px; box-shadow: 0 0 0 1px rgba(0,0,0,.15) inset; }}
   details.region-details summary {{ cursor: pointer; font-weight: 600; margin-top: 18px; }}
+  tr.region-row {{ cursor: pointer; }}
+  tr.region-row:hover {{ background: #f2f6fb; }}
+  .preview-frame {{ position: relative; display: inline-block; max-width: 100%; line-height: 0; }}
+  .region-overlay {{ position: absolute; border: 2px solid rgba(28,90,170,0.65);
+                      background: rgba(28,90,170,0.07); box-sizing: border-box;
+                      text-decoration: none; }}
+  .region-overlay:hover {{ background: rgba(28,90,170,0.25); }}
+  .region-overlay.needs-review {{ border-color: #a94442; }}
+  .region-overlay.corrected {{ border-style: dashed; border-width: 3px; }}
+  details.region-form {{ background: #f7f9fb; border: 1px solid #e2e6ea; border-radius: 8px;
+                          padding: 10px 14px; margin-top: 10px; }}
+  details.region-form summary {{ cursor: pointer; font-weight: 600; margin-top: 0; }}
+  details.region-form summary .chip {{ margin-left: 6px; }}
+  .correction-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+                       gap: 10px 14px; margin-top: 10px; }}
+  .correction-grid label {{ font-size: 0.8rem; margin: 0; font-weight: 600; color: #444; }}
+  .correction-grid input, .correction-grid select {{ margin-top: 4px; font-size: 0.9rem; }}
+  .notice {{ background: #eafaf0; border: 1px solid #b8e2c8; border-radius: 8px;
+             padding: 12px 16px; margin: 12px 0; font-size: 0.9rem; }}
+  a.review-link {{ display: inline-block; margin-top: 10px; font-weight: 600; }}
 </style>
 </head>
 <body>
@@ -277,18 +300,7 @@ def _analysis_summary_html(result: dict) -> str:
     next step on top of this, not yet built -- this is the read-only
     "see the decisions" half of that flow.
     """
-    s = result["summary"]
-    review_class = "review" if s["warnings_requiring_review"] else ""
-    summary_bar = f"""
-<div class="summary-bar">
-  <span><b>{s['visual_colors_detected']}</b> visual colors detected</span>
-  <span><b>{s['thread_colors_selected']}</b> thread colors selected</span>
-  <span><b>{s['filled_regions']}</b> filled regions</span>
-  <span><b>{s['satin_columns']}</b> satin columns</span>
-  <span><b>{s['running_stitch_details']}</b> running-stitch details</span>
-  <span><b>{s['texture_zones']}</b> texture zones</span>
-  <span class="{review_class}"><b>{s['warnings_requiring_review']}</b> warning(s) requiring review</span>
-</div>"""
+    summary_bar = _analysis_summary_html_bar_only(result)
 
     def row(r: dict) -> str:
         cls = "needs-review" if r["needs_review"] else ""
@@ -317,6 +329,168 @@ def _analysis_summary_html(result: dict) -> str:
     return summary_bar + table
 
 
+def _region_overlays_html(result: dict) -> str:
+    """One clickable overlay box per region, positioned over the preview
+    image by percentage (src/pipeline.py's bbox_pct, computed against
+    the same bounds+margin the preview PNG is rendered at) so it lines
+    up regardless of how the browser scales the image."""
+    boxes = []
+    for r in result["regions"]:
+        b = r["bbox_pct"]
+        cls = "region-overlay"
+        if r["needs_review"]:
+            cls += " needs-review"
+        if r["corrected"]:
+            cls += " corrected"
+        boxes.append(
+            f'<a class="{cls}" href="#form-{r["id"]}" '
+            f'style="left:{b["left"]}%;top:{b["top"]}%;width:{max(b["width"], 1.5)}%;'
+            f'height:{max(b["height"], 1.5)}%;" '
+            f'title="{r["id"]} ({r["stitch_type"]}) -- click to edit"></a>')
+    return "".join(boxes)
+
+
+_STITCH_TYPES = ["running", "satin", "fill"]
+
+
+def _region_form_html(region_meta: dict, existing: dict) -> str:
+    rid = region_meta["id"]
+
+    def opt(value, label, current):
+        sel = " selected" if current == value else ""
+        return f'<option value="{value}"{sel}>{label}</option>'
+
+    stitch_options = opt("", f"unchanged ({region_meta['stitch_type']})", existing.get("stitch_type") or "")
+    stitch_options += "".join(
+        opt(t, t, existing.get("stitch_type") or "") for t in _STITCH_TYPES)
+
+    underlay_val = existing.get("underlay")
+    underlay_str = "" if underlay_val is None else ("on" if underlay_val else "off")
+    underlay_options = "".join(
+        opt(v, label, underlay_str) for v, label in
+        [("", "unchanged"), ("on", "on"), ("off", "off")])
+
+    def numval(key):
+        v = existing.get(key)
+        return "" if v is None else v
+
+    thread_rgb = existing.get("thread_rgb")
+    thread_hex = "".join("%02x" % c for c in thread_rgb) if thread_rgb else ""
+
+    open_attr = " open" if (region_meta["corrected"] or region_meta["needs_review"]) else ""
+    corrected_chip = ('<span class="chip" style="background:#eee;color:#555;">corrected</span>'
+                       if region_meta["corrected"] else "")
+    return f"""
+<details class="region-form" id="form-{rid}"{open_attr}>
+  <summary>{rid} <span class="chip {region_meta['stitch_type']}">{region_meta['stitch_type']}</span>
+    {corrected_chip}
+  </summary>
+  <p style="font-size:0.82rem;color:#666;margin:6px 0 0;">{region_meta['reason']}</p>
+  <div class="correction-grid">
+    <label>Stitch type
+      <select name="{rid}::stitch_type">{stitch_options}</select>
+    </label>
+    <label>Angle (deg)
+      <input type="number" step="any" name="{rid}::angle_deg" value="{numval('angle_deg')}" placeholder="unchanged">
+    </label>
+    <label>Density / row spacing (mm)
+      <input type="number" step="any" min="0.05" name="{rid}::density_mm" value="{numval('density_mm')}" placeholder="unchanged">
+    </label>
+    <label>Underlay
+      <select name="{rid}::underlay">{underlay_options}</select>
+    </label>
+    <label>Border width (mm)
+      <input type="number" step="any" min="0" name="{rid}::border_width_mm" value="{numval('border_width_mm')}" placeholder="unchanged">
+    </label>
+    <label>Layer order (z)
+      <input type="number" step="1" name="{rid}::z_order" value="{numval('z_order')}" placeholder="{region_meta['z_order']}">
+    </label>
+    <label>Thread color override (hex)
+      <input type="text" name="{rid}::thread_rgb" value="{thread_hex}"
+             placeholder="{region_meta['thread_rgb_hex'].lstrip('#')}" pattern="[0-9a-fA-F]{{6}}" maxlength="6">
+    </label>
+  </div>
+</details>"""
+
+
+def _review_page_html(job_id: str, spec: JobSpec, result: dict,
+                       error: str | None = None, notice: str | None = None) -> str:
+    banner = ""
+    if error:
+        banner = f'<div class="card error"><p><b>Correction rejected:</b> {error}</p></div>'
+    elif notice:
+        banner = f'<div class="notice">{notice}</div>'
+
+    rows = []
+    for r in result["regions"]:
+        cls = "region-row needs-review" if r["needs_review"] else "region-row"
+        rows.append(f"""<tr class="{cls}" onclick="location.hash='form-{r['id']}'">
+  <td>{r['id']}</td>
+  <td><span class="chip {r['stitch_type']}">{r['stitch_type']}</span></td>
+  <td><span class="thread-dot" style="background:{r['thread_rgb_hex']};"></span>{r['thread_name']}</td>
+  <td>{r['confidence']:.2f}</td>
+  <td>{'yes' if r['corrected'] else '&ndash;'}</td>
+</tr>""")
+
+    forms = "".join(
+        _region_form_html(r, spec.corrections.get(r["id"], {})) for r in result["regions"])
+
+    return f"""
+{banner}
+<div class="card">
+  <p class="stat"><b>{result['stitch_count']}</b>stitches</p>
+  <p class="stat"><b>{result['runtime_formatted']}</b>est. run time</p>
+  <p class="stat"><b>{spec.fabric}</b>fabric</p>
+  {_analysis_summary_html_bar_only(result)}
+
+  <div class="preview-frame">
+    <img class="preview" src="/outputs/{job_id}/design_preview.png?v={len(spec.corrections)}" alt="Stitch preview">
+    {_region_overlays_html(result)}
+  </div>
+
+  <div style="overflow-x:auto;">
+    <table class="regions">
+      <tr><th>Region</th><th>Stitch type</th><th>Thread</th><th>Confidence</th><th>Corrected</th></tr>
+      {''.join(rows)}
+    </table>
+  </div>
+
+  <form action="/review/{job_id}/correct" method="post">
+    <h3 style="margin-bottom:0;">Per-region corrections</h3>
+    <p style="font-size:0.85rem;color:#666;">Leave a field blank to keep the automatic decision.
+    Click a region above (on the image or in the table) to jump to its form.</p>
+    {forms}
+    <button type="submit">Apply corrections</button>
+  </form>
+
+  <div style="margin-top:20px;">
+    <a class="download" href="/outputs/{job_id}/design.dst" download>Download .DST</a>
+    <a class="download" href="/outputs/{job_id}/design.pes" download>Download .PES</a>
+  </div>
+  {_stitch_player_html(job_id)}
+</div>
+<p class="back"><a href="/">&larr; digitize another image</a></p>
+"""
+
+
+def _analysis_summary_html_bar_only(result: dict) -> str:
+    """Just the counts bar from _analysis_summary_html, without the
+    read-only per-region table (the review page has its own clickable
+    table with a "corrected" column instead)."""
+    s = result["summary"]
+    review_class = "review" if s["warnings_requiring_review"] else ""
+    return f"""
+<div class="summary-bar">
+  <span><b>{s['visual_colors_detected']}</b> visual colors detected</span>
+  <span><b>{s['thread_colors_selected']}</b> thread colors selected</span>
+  <span><b>{s['filled_regions']}</b> filled regions</span>
+  <span><b>{s['satin_columns']}</b> satin columns</span>
+  <span><b>{s['running_stitch_details']}</b> running-stitch details</span>
+  <span><b>{s['texture_zones']}</b> texture zones</span>
+  <span class="{review_class}"><b>{s['warnings_requiring_review']}</b> warning(s) requiring review</span>
+</div>"""
+
+
 def _parse_optional_float(value: str | None) -> float | None:
     if not value:
         return None
@@ -337,6 +511,13 @@ def _run_and_render(job_id: str, input_path: str, fabric: str, border: float,
         result = digitize_image(input_path, fabric, out_stem,
                                  border_width_mm=border, force=force,
                                  target_width_mm=width_mm, target_height_mm=height_mm)
+        # Persist enough of this request to redo it later with manual
+        # corrections applied (src/review/rebuild.py) -- only saved on
+        # success, so a rejected job has nothing to review until it's
+        # been force-digitized into an actual result.
+        save_job_spec(job_dir, JobSpec(
+            input_path=input_path, fabric=fabric, border_width_mm=border,
+            force=force, width_mm=width_mm, height_mm=height_mm))
     except DigitizeScopeError as e:
         retry = "" if force else f"""
 <form action="/force/{job_id}" method="post" style="margin-top:12px;">
@@ -363,6 +544,7 @@ def _run_and_render(job_id: str, input_path: str, fabric: str, border: float,
   <p class="stat"><b>{fabric}</b>fabric</p>
   {warnings_html}
   {_analysis_summary_html(result)}
+  <a class="review-link" href="/review/{job_id}">Review &amp; correct regions &rarr;</a>
   <div style="margin-top:16px;">
     <img class="preview" src="/outputs/{job_id}/design_preview.png" alt="Stitch preview">
   </div>
@@ -435,6 +617,67 @@ def force_digitize(job_id):
 
     return _run_and_render(job_id, input_path, fabric, border, force=True,
                             width_mm=width_mm, height_mm=height_mm)
+
+
+@app.route("/review/<job_id>")
+def review(job_id):
+    """Manual-review page: clickable region overlays over the preview,
+    a per-region analysis table, and an editable form per region
+    (src/review/corrections.py) for stitch type, angle, density,
+    underlay, border width, layer order, and thread color. Rebuilds on
+    every load rather than reading cached files, so it always reflects
+    the job's current corrections (see src/jobs.py's determinism note)."""
+    job_id = secure_filename(job_id)
+    job_dir = os.path.join(RESULTS_DIR, job_id)
+    if not os.path.isdir(job_dir) or not has_job_spec(job_dir):
+        abort(404)
+
+    spec = load_job_spec(job_dir)
+    out_stem = os.path.join(job_dir, "design")
+    try:
+        result = rebuild_job(spec, out_stem)
+    except Exception as e:  # noqa: BLE001 -- surface pipeline errors, not a 500 page
+        return _page(f'<div class="card error"><p><b>Error:</b> {e}</p>'
+                      f'<p class="back"><a href="/">&larr; back</a></p></div>'), 500
+
+    return _page(_review_page_html(job_id, spec, result))
+
+
+@app.route("/review/<job_id>/correct", methods=["POST"])
+def review_correct(job_id):
+    """Validates every submitted region correction *before* applying
+    any of them, merges the valid ones into the job's persisted spec
+    (a blank field reverts that region to its automatic decision), and
+    rebuilds -- re-exporting DST/PES, the preview, and the stitch-player
+    command stream, with every uncorrected region's decision unchanged."""
+    job_id = secure_filename(job_id)
+    job_dir = os.path.join(RESULTS_DIR, job_id)
+    if not os.path.isdir(job_dir) or not has_job_spec(job_dir):
+        abort(404)
+
+    spec = load_job_spec(job_dir)
+    out_stem = os.path.join(job_dir, "design")
+    current = rebuild_job(spec, out_stem)
+    region_ids = {r["id"] for r in current["regions"]}
+
+    try:
+        overrides = parse_correction_form(request.form.to_dict(), region_ids)
+    except CorrectionValidationError as e:
+        return _page(_review_page_html(job_id, spec, current, error=str(e))), 400
+
+    applied = []
+    for region_id, override in overrides.items():
+        if override.is_noop():
+            spec.corrections.pop(region_id, None)
+        else:
+            spec.corrections[region_id] = override.__dict__
+            applied.append(region_id)
+
+    save_job_spec(job_dir, spec)
+    result = rebuild_job(spec, out_stem)
+    notice = (f"Applied correction(s) to {len(applied)} region(s)." if applied
+              else "No changes submitted -- every field was left blank.")
+    return _page(_review_page_html(job_id, spec, result, notice=notice))
 
 
 @app.route("/outputs/<job_id>/<path:filename>")

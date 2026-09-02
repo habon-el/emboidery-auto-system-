@@ -92,29 +92,70 @@ What's in place:
   variance — a drawn fur/scale/wood-grain pattern quantization flattened
   away — sampled away from each region's own anti-aliased edge so an
   ordinary flat region's boundary softness isn't misread as texture.
+  A texture-flagged fill region gets a cross-hatched (two-direction)
+  fill instead of one flat pass (`src/stitches/build.py`).
 - **Classification reason + confidence** (`src/params/classify.py`):
   every stitch-type decision carries a plain-language reason and a
   0-1 confidence score (how far the deciding measurement sits from its
   threshold), rolled up into the "N warning(s) requiring review" count.
-- **Per-region analysis table** in the web UI: a read-only view of every
-  region's stitch type, matched thread, confidence, and texture flag.
-  This is the "see the decisions" half of a correction workflow — an
-  interactive editor to *change* a region's stitch type/density/angle/
-  thread/layer order and re-render just that region is the next step on
-  top of this, not yet built.
+- **Region containment/layer order**: each region carries a `z_order`
+  (draw/paint order — meaningful document order for SVG input, discovery
+  order for raster) used both to display a sensible default layering and
+  as a pathing tiebreak (`src/pathing/order.py`), overridable per region
+  in the manual review workflow below.
 
-Known limitation: color reduction's k-means fit is capped at a bounded
-sample of pixels and the final per-pixel assignment is O(pixels ×
-colors), which is fine for a typical logo/text image but not yet
-performance-tuned for a several-megapixel input — a very large upload
-will be slower to analyze (and to reject, if it turns out to be a photo)
-than a small one.
+### Manual region review
+
+A real correction workflow, not just a read-only report: every
+`digitize` run through the web UI links to `/review/<job>`, which shows
+
+- the preview with a clickable/highlighted overlay box per region,
+- a summary table (visual/thread color counts, stitch-type counts,
+  texture-zone count, warning count), and
+- a per-region form to override stitch type, angle, density/row
+  spacing, underlay on/off, border width, layer order, and thread color.
+
+Leaving a field blank keeps the automatic decision; submitting only
+changes the regions you touched (`src/review/corrections.py`) and
+re-runs classification for every region fresh rather than caching
+anything server-side — safe because extraction and classification are
+deterministic (same input always re-extracts to the same regions), so
+an uncorrected region always comes back with the exact decision it had
+before. A correction rebuild re-exports DST/PES, the preview, and the
+Stitch Player's command stream, and is validated *before* anything is
+applied — an invalid field in one region's form blocks the whole
+submission rather than partially applying it. See `src/jobs.py` for how
+a job's corrections persist between requests and `src/review/rebuild.py`
+for the rebuild itself.
+
+### Known limitations
+
+- **Raster preprocessing is minimal.** There's no EXIF auto-orientation,
+  no alpha/GrabCut-based background separation beyond the existing
+  border-pixel majority vote, and no CLAHE/bilateral pre-normalization
+  before color reduction. A well-formed flat PNG/SVG works well; a
+  photographed or heavily compressed source image is more likely to
+  trip the photo/gradient rejection than it would with real
+  preprocessing in front of it.
+- Color reduction's k-means fit is capped at a bounded sample of pixels
+  and the final per-pixel assignment is O(pixels × colors), which is
+  fine for a typical logo/text image but not yet performance-tuned for
+  a several-megapixel input — a very large upload will be slower to
+  analyze (and to reject, if it turns out to be a photo) than a small one.
+- The thread palette (`src/params/thread_palette.py`) is a small sample,
+  not a full manufacturer catalog, and covers one brand's naming only.
+- Photo-realistic digitizing (halftone/density-based tone simulation)
+  is out of scope entirely — see the module docstring in
+  `src/regions/color_reduce.py` and `src/regions/scope.py`'s
+  photo/gradient rejection, which this milestone's color/texture work
+  deliberately sits upstream of, not around.
 
 ### Web UI (local only)
 
 A small local Flask app wraps the same pipeline with a browser UI:
 upload an image, pick a fabric preset and border width, see the
-preview and download the .dst/.pes.
+preview and download the .dst/.pes, then jump into **Manual region
+review** (below) to correct individual regions before committing.
 
 ```bash
 pip install -r requirements.txt   # picks up Flask

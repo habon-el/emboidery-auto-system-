@@ -56,13 +56,25 @@ def nearest_neighbor_order(blocks: list[StitchBlock],
 
 
 def order_by_color_then_distance(blocks: list[StitchBlock],
-                                  start: Point = (0.0, 0.0)
+                                  start: Point = (0.0, 0.0),
+                                  z_order_by_element: dict[str, int] | None = None
                                   ) -> list[StitchBlock]:
     """Group blocks by color (in first-seen order), then by underlay/top
     stitch stage within each color (underlay always first), and
     nearest-neighbor order within each stage. This keeps all stitching
     for one thread together (COLOR_CHANGE only fires between groups)
-    without ever sewing top stitching before its underlay."""
+    without ever sewing top stitching before its underlay.
+
+    z_order_by_element (element_id -> layer index, lower sews first --
+    see Region.z_order and the manual-review workflow's per-region layer
+    override in src/review/corrections.py) additionally groups each
+    stage's blocks by element and walks the elements in that order,
+    nearest-neighbor only *within* one element's own blocks. Left as
+    None (the default for every caller except src/pipeline.py), a
+    stage's blocks from different elements can interleave by whichever
+    is spatially closest -- which is what every existing test and
+    caller already expects, so this is purely additive.
+    """
     seen_colors: list[int] = []
     for b in blocks:
         if b.color_index not in seen_colors:
@@ -77,8 +89,19 @@ def order_by_color_then_distance(blocks: list[StitchBlock],
         for stage in stages:
             stage_blocks = [b for b in group
                              if _STAGE_PRIORITY.get(b.stitch_type, 1) == stage]
-            ordered = nearest_neighbor_order(stage_blocks, start=cur)
-            result.extend(ordered)
-            if ordered:
-                cur = ordered[-1].points_mm[-1]
+            if z_order_by_element:
+                elements = sorted(
+                    dict.fromkeys(b.element_id for b in stage_blocks),
+                    key=lambda e: z_order_by_element.get(e, 0))
+                for element in elements:
+                    el_blocks = [b for b in stage_blocks if b.element_id == element]
+                    ordered = nearest_neighbor_order(el_blocks, start=cur)
+                    result.extend(ordered)
+                    if ordered:
+                        cur = ordered[-1].points_mm[-1]
+            else:
+                ordered = nearest_neighbor_order(stage_blocks, start=cur)
+                result.extend(ordered)
+                if ordered:
+                    cur = ordered[-1].points_mm[-1]
     return result
