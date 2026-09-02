@@ -113,7 +113,19 @@ A real correction workflow, not just a read-only report: every
 - a summary table (visual/thread color counts, stitch-type counts,
   texture-zone count, warning count), and
 - a per-region form to override stitch type, angle, density/row
-  spacing, underlay on/off, border width, layer order, and thread color.
+  spacing, underlay on/off, border width, layer order, thread color,
+  and where the machine's automatic thread trimmer cuts.
+
+**Trim control** ("where the scissors will go"): every run reports a
+real trim count (`result["trim_count"]`, counted from the actual
+exported command stream) alongside the stitch count, and the Stitch
+Player marks each trim with a red × distinct from a plain travel jump.
+Trims are normally decided automatically by travel distance
+(`src/pathing/route.py`), but a region's correction form can force one
+("cut here" even on a short gap) or suppress one ("never cut here" even
+on a long gap, leaving the machine to jump there with the thread still
+attached) — see `StitchBlock.force_trim_before` and
+`src/review/corrections.py`'s `force_trim` field.
 
 Leaving a field blank keeps the automatic decision; submitting only
 changes the regions you touched (`src/review/corrections.py`) and

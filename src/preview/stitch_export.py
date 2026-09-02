@@ -24,13 +24,19 @@ _KIND_BY_CODE = {
 }
 
 
-def export_stitch_json(plan: StitchPlan, out_path: str) -> str:
+def export_stitch_json(plan: StitchPlan, out_path: str) -> tuple[str, int]:
+    """Returns (out_path, trim_count) -- trim_count is exactly how many
+    times the machine's thread trimmer ("the scissors") will actually
+    fire, counted from the real exported command stream, not estimated."""
     pattern = stitch_plan_to_pattern(plan)
     colors_hex = [t.hex_color() for t in pattern.threadlist] or ["#000000"]
 
     steps = []
+    trim_count = 0
     for x, y, cmd in pattern.stitches:
         kind = _KIND_BY_CODE.get(cmd & pe.COMMAND_MASK, "other")
+        if kind == "trim":
+            trim_count += 1
         steps.append({
             "x": round(x / UNITS_PER_MM, 3),
             "y": round(y / UNITS_PER_MM, 3),
@@ -39,4 +45,4 @@ def export_stitch_json(plan: StitchPlan, out_path: str) -> str:
 
     with open(out_path, "w") as f:
         json.dump({"colors": colors_hex, "steps": steps}, f)
-    return out_path
+    return out_path, trim_count

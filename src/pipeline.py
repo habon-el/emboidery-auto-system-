@@ -159,6 +159,24 @@ def build_and_export(region_set: RegionSet, fabric, out_stem: str,
         all_blocks.extend(blocks)
 
     ordered = order_by_color_then_distance(all_blocks, z_order_by_element=z_order_by_element)
+
+    # force_trim (src/review/corrections.py) marks whichever block ends
+    # up scheduled *first* for that region -- not necessarily the block
+    # that was blocks[0] before pathing, since a region with several
+    # same-stage blocks (e.g. multiple fill runs) can have any of them
+    # picked first by nearest-neighbor ordering. Doing this after
+    # ordering, on the real final sequence, is what makes the forced
+    # (or suppressed) trim land exactly at the region's actual start
+    # rather than wherever an arbitrarily-marked block happened to land.
+    force_trim_by_id = {rid: ov.force_trim for rid, ov in corrections.items()
+                         if ov and ov.force_trim is not None}
+    if force_trim_by_id:
+        already_marked: set[str] = set()
+        for i, b in enumerate(ordered):
+            if b.element_id in force_trim_by_id and b.element_id not in already_marked:
+                ordered[i] = replace(b, force_trim_before=force_trim_by_id[b.element_id])
+                already_marked.add(b.element_id)
+
     all_colors = region_set.colors + extra_colors
     plan = StitchPlan(blocks=ordered, colors=all_colors)
 

@@ -28,6 +28,11 @@ class RegionOverride:
     border_width_mm: float | None = None
     z_order: int | None = None
     thread_rgb: tuple[int, int, int] | None = None
+    # Force the machine's automatic thread trimmer to cut immediately
+    # before this region regardless of travel distance -- None leaves
+    # the automatic distance-based rule (src/pathing/route.py) in
+    # charge; True/False forces a cut on/off at this region's start.
+    force_trim: bool | None = None
 
     def is_noop(self) -> bool:
         return all(v is None for v in asdict(self).values())
@@ -44,6 +49,17 @@ def _parse_float(raw: dict, key: str, min_value: float | None = None) -> float |
     if min_value is not None and f < min_value:
         raise CorrectionValidationError(f"'{key}' must be >= {min_value}, got {f}.")
     return f
+
+
+_TRI_BOOL = {"": None, "unchanged": None, "on": True, "true": True,
+             "off": False, "false": False}
+
+
+def _parse_tri_bool(raw: dict, key: str) -> bool | None:
+    val = (raw.get(key) or "").strip().lower()
+    if val and val not in _TRI_BOOL:
+        raise CorrectionValidationError(f"'{key}' must be on/off, got {raw.get(key)!r}.")
+    return _TRI_BOOL.get(val)
 
 
 def parse_region_override(raw: dict) -> RegionOverride:
@@ -63,11 +79,8 @@ def parse_region_override(raw: dict) -> RegionOverride:
     density_mm = _parse_float(raw, "density_mm", min_value=0.05)
     border_width_mm = _parse_float(raw, "border_width_mm", min_value=0.0)
 
-    underlay_raw = (raw.get("underlay") or "").strip().lower()
-    underlay = {"": None, "unchanged": None, "on": True, "true": True,
-                "off": False, "false": False}.get(underlay_raw)
-    if underlay_raw and underlay_raw not in ("unchanged", "on", "true", "off", "false"):
-        raise CorrectionValidationError(f"'underlay' must be on/off, got {raw.get('underlay')!r}.")
+    underlay = _parse_tri_bool(raw, "underlay")
+    force_trim = _parse_tri_bool(raw, "force_trim")
 
     z_order_raw = (raw.get("z_order") or "").strip()
     z_order = None
@@ -91,7 +104,7 @@ def parse_region_override(raw: dict) -> RegionOverride:
 
     return RegionOverride(stitch_type=stitch_type, angle_deg=angle_deg, density_mm=density_mm,
                            underlay=underlay, border_width_mm=border_width_mm,
-                           z_order=z_order, thread_rgb=thread_rgb)
+                           z_order=z_order, thread_rgb=thread_rgb, force_trim=force_trim)
 
 
 def parse_correction_form(form: dict, region_ids: set[str]) -> dict[str, "RegionOverride"]:
@@ -138,7 +151,8 @@ def override_from_stored(d: dict) -> RegionOverride:
         stitch_type=d.get("stitch_type"), angle_deg=d.get("angle_deg"),
         density_mm=d.get("density_mm"), underlay=d.get("underlay"),
         border_width_mm=d.get("border_width_mm"), z_order=d.get("z_order"),
-        thread_rgb=tuple(thread_rgb) if thread_rgb is not None else None)
+        thread_rgb=tuple(thread_rgb) if thread_rgb is not None else None,
+        force_trim=d.get("force_trim"))
 
 
 def resolve_override(classification: Classification, fabric: FabricPreset,

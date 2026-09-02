@@ -222,7 +222,20 @@ STITCH_PLAYER_JS = """
     for (let i = 0; i <= idx && i < steps.length; i++) {
       const s = steps[i];
       if (s.t === 'color_change') { colorIdx = (colorIdx + 1) % colors.length; prev = null; continue; }
-      if (s.t === 'trim' || s.t === 'end') { prev = null; continue; }
+      if (s.t === 'trim') {
+        // Mark exactly where the machine's thread trimmer fires -- "where
+        // the scissors go" -- as a small red X, distinct from a plain
+        // jump (which only travels, it doesn't cut).
+        const [tx, ty] = toPx(s.x, s.y);
+        ctx.strokeStyle = '#c23b2e'; ctx.lineWidth = 1.6; ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(tx - 4, ty - 4); ctx.lineTo(tx + 4, ty + 4);
+        ctx.moveTo(tx + 4, ty - 4); ctx.lineTo(tx - 4, ty + 4);
+        ctx.stroke();
+        prev = null;
+        continue;
+      }
+      if (s.t === 'end') { prev = null; continue; }
       const [px, py] = toPx(s.x, s.y);
       if (prev) {
         ctx.beginPath();
@@ -286,6 +299,7 @@ def _stitch_player_html(job_id: str) -> str:
   <div class="legend">
     <span><span class="swatch" style="background:#333;"></span>stitch</span>
     <span><span class="swatch" style="background:#bbb;border-top:1px dashed #999;"></span>jump/travel</span>
+    <span><span style="color:#c23b2e;font-weight:700;">&times;</span>trim (scissor cut)</span>
   </div>
 </div>
 {js}"""
@@ -370,6 +384,12 @@ def _region_form_html(region_meta: dict, existing: dict) -> str:
         opt(v, label, underlay_str) for v, label in
         [("", "unchanged"), ("on", "on"), ("off", "off")])
 
+    trim_val = existing.get("force_trim")
+    trim_str = "" if trim_val is None else ("on" if trim_val else "off")
+    force_trim_options = "".join(
+        opt(v, label, trim_str) for v, label in
+        [("", "unchanged (automatic)"), ("on", "force a cut here"), ("off", "never cut here")])
+
     def numval(key):
         v = existing.get(key)
         return "" if v is None else v
@@ -398,6 +418,9 @@ def _region_form_html(region_meta: dict, existing: dict) -> str:
     </label>
     <label>Underlay
       <select name="{rid}::underlay">{underlay_options}</select>
+    </label>
+    <label>Trim (scissor cut) before this region
+      <select name="{rid}::force_trim">{force_trim_options}</select>
     </label>
     <label>Border width (mm)
       <input type="number" step="any" min="0" name="{rid}::border_width_mm" value="{numval('border_width_mm')}" placeholder="unchanged">
@@ -439,6 +462,7 @@ def _review_page_html(job_id: str, spec: JobSpec, result: dict,
 {banner}
 <div class="card">
   <p class="stat"><b>{result['stitch_count']}</b>stitches</p>
+  <p class="stat"><b>{result['trim_count']}</b>trims (scissor cuts)</p>
   <p class="stat"><b>{result['runtime_formatted']}</b>est. run time</p>
   <p class="stat"><b>{spec.fabric}</b>fabric</p>
   {_analysis_summary_html_bar_only(result)}
@@ -540,6 +564,7 @@ def _run_and_render(job_id: str, input_path: str, fabric: str, border: float,
     return _page(f"""
 <div class="card">
   <p class="stat"><b>{result['stitch_count']}</b>stitches</p>
+  <p class="stat"><b>{result['trim_count']}</b>trims (scissor cuts)</p>
   <p class="stat"><b>{result['runtime_formatted']}</b>est. run time</p>
   <p class="stat"><b>{fabric}</b>fabric</p>
   {warnings_html}

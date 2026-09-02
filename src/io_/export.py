@@ -40,7 +40,16 @@ def stitch_plan_to_pattern(plan: StitchPlan) -> pe.EmbPattern:
         start = block.points_mm[0]
         if cur_pos is not None:
             gap = math.hypot(start[0] - cur_pos[0], start[1] - cur_pos[1])
-            if needs_trim(gap):
+            # force_trim_before (a manual region correction -- see
+            # src/review/corrections.py's force_trim) overrides the
+            # automatic distance rule either direction: True cuts here
+            # even on a short gap; False suppresses a cut even on a
+            # long one (the machine still jumps there, just without
+            # trimming first). None (the default) leaves needs_trim's
+            # distance rule in charge, unchanged from before.
+            should_trim = (block.force_trim_before if block.force_trim_before is not None
+                           else needs_trim(gap))
+            if should_trim:
                 p.add_stitch_absolute(pe.TRIM, *mm_to_units_pt(cur_pos))
                 p.add_stitch_absolute(pe.JUMP, *mm_to_units_pt(start))
             elif needs_jump(gap):

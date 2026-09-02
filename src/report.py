@@ -18,7 +18,7 @@ def write_and_report(plan: StitchPlan, out_stem: str) -> dict:
 
     paths = write_pattern(plan, out_stem)
     preview_path = render_preview(plan, f"{out_stem}_preview.png")
-    stitches_json_path = export_stitch_json(plan, f"{out_stem}_stitches.json")
+    stitches_json_path, trim_count = export_stitch_json(plan, f"{out_stem}_stitches.json")
     runtime_s = estimate_runtime_seconds(plan)
     stitch_count = plan.stitch_count()
 
@@ -26,6 +26,7 @@ def write_and_report(plan: StitchPlan, out_stem: str) -> dict:
     print(f"Wrote {paths['pes']}")
     print(f"Wrote {preview_path}")
     print(f"Stitch count: {stitch_count}")
+    print(f"Trim (scissor cut) count: {trim_count}")
     print(f"Estimated run time: {format_runtime(runtime_s)}")
 
     return {
@@ -34,6 +35,7 @@ def write_and_report(plan: StitchPlan, out_stem: str) -> dict:
         "preview": preview_path,
         "stitches_json": stitches_json_path,
         "stitch_count": stitch_count,
+        "trim_count": trim_count,
         "runtime_seconds": runtime_s,
         "runtime_formatted": format_runtime(runtime_s),
     }

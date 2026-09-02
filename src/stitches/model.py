@@ -33,6 +33,15 @@ class StitchBlock:
     # Region/element id this block belongs to, so pathing can keep blocks
     # from the same region adjacent and a human can re-sequence by element.
     element_id: str = ""
+    # Overrides the machine's automatic thread trimmer for the travel
+    # immediately before this block: None (default) leaves the
+    # automatic distance rule in charge (src/pathing/route.py); True
+    # forces a cut even if the gap is short; False suppresses a cut
+    # even if the gap is long enough that the automatic rule would
+    # normally call for one (the machine still jumps there -- it just
+    # doesn't cut the thread first, leaving a float). Set by a manual
+    # region correction (src/review/corrections.py's force_trim).
+    force_trim_before: bool | None = None
 
     def is_empty(self) -> bool:
         return len(self.points_mm) < 2
