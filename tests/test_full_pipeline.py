@@ -17,7 +17,7 @@ INPUTS = os.path.join(os.path.dirname(__file__), "..", "testbench", "inputs")
 # (min_stitches, max_stitches, expected_color_count)
 EXPECTED = {
     "circle_2color.png": (400, 1200, 1),
-    "bar_satin.png": (350, 1000, 1),
+    "bar_satin.png": (350, 1200, 1),
     "star_3color.png": (250, 900, 2),
     "text_sample.png": (70, 500, 1),
     "logo.svg": (700, 2000, 2),

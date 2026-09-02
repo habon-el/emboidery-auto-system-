@@ -55,6 +55,35 @@ def test_satin_rails_span_expected_width():
     assert 2.5 <= sum(widths) / len(widths) <= 5.5
 
 
+def test_winding_line_art_is_running_despite_wide_bounding_box():
+    """A thin stroke that winds within a roughly-square bounding box (a
+    line-art squiggle, not unlike a spiral) should be running stitch --
+    its bounding-rectangle elongation alone doesn't say so, but its true
+    width (area over the full medial-axis skeleton length, not just one
+    walked path) does. This is the milestone's "line-art detection"
+    (Multi-Region Illustration Digitization, item 6)."""
+    import math
+    fabric = get_preset("twill")
+    xs = [i * 40.0 / 200 for i in range(201)]
+    ys = [8 * math.sin(x / 40 * 4 * math.pi) for x in xs]
+    width = 1.5
+    top = [(x, y + width / 2) for x, y in zip(xs, ys)]
+    bottom = [(x, y - width / 2) for x, y in zip(reversed(xs), reversed(ys))]
+    ribbon = Polygon(top + bottom).buffer(0)
+    region = Region(polygon=ribbon, color_index=0, region_id="ribbon")
+    c = classify_region(region, fabric)
+    assert c.stitch_type == RUNNING
+
+
+def test_confidence_is_bounded_and_reason_is_set():
+    fabric = get_preset("twill")
+    for region in (_rect_region(40.0, 4.0), _rect_region(20.0, 20.0),
+                    _rect_region(30.0, 0.6), _rect_region(50.0, 15.0)):
+        c = classify_region(region, fabric)
+        assert 0.0 <= c.confidence <= 1.0
+        assert c.reason
+
+
 def test_angle_follows_long_axis_not_bounding_box():
     """A rectangle rotated 30 degrees should report an angle near 30 (mod
     180), not 0/90 -- proves angle comes from the medial axis, not the

@@ -143,9 +143,17 @@ def _walk_skeleton(coords_px: list[tuple[int, int]]) -> list[int]:
 
 
 class MedialAxisResult:
-    def __init__(self, path_points_mm: list[Point], widths_mm: list[float]):
+    def __init__(self, path_points_mm: list[Point], widths_mm: list[float],
+                 total_skeleton_length_mm: float = 0.0):
         self.path_points_mm = path_points_mm
         self.widths_mm = widths_mm
+        # Length of the FULL pruned skeleton (every branch, before the
+        # single greedy walk picks one path through it) -- unlike
+        # length_mm below, this stays meaningful for a branching shape
+        # (a star's arms + hub, not just whichever arm the walk followed).
+        # Used by src/params/classify.py as area/this for a true
+        # average-width estimate that doesn't depend on walk order.
+        self.total_skeleton_length_mm = total_skeleton_length_mm
 
     @property
     def length_mm(self) -> float:
@@ -195,10 +203,21 @@ class MedialAxisResult:
         return rail_a, rail_b
 
 
+MEDIAL_AXIS_RNG_SEED = 1729
+
+
 def compute_medial_axis(polygon: Polygon, res_mm: float = RASTER_RES_MM
                          ) -> MedialAxisResult:
     mask, (ox, oy) = _rasterize(polygon, res_mm)
-    skeleton, distance = medial_axis(mask, return_distance=True)
+    # skimage's medial_axis draws an unseeded PRNG by default (its `rng`
+    # param, used to break exact distance-transform ties -- a straight,
+    # symmetric shape like a satin bar is full of these) -- left
+    # unseeded, the *same* polygon can skeletonize to a visibly
+    # different pixel count from one call to the next, which cascades
+    # into a different satin rail walk and a different stitch count for
+    # a design that never changed. A fixed seed makes this reproducible.
+    skeleton, distance = medial_axis(
+        mask, return_distance=True, rng=MEDIAL_AXIS_RNG_SEED)
     ys, xs = np.nonzero(skeleton)
     if len(xs) == 0:
         return MedialAxisResult([], [])
@@ -207,9 +226,14 @@ def compute_medial_axis(polygon: Polygon, res_mm: float = RASTER_RES_MM
     coords_px = _prune_spurs(coords_px, distance, res_mm, SPUR_SIGNIFICANCE_FACTOR)
     if not coords_px:
         return MedialAxisResult([], [])
+    # Every remaining skeleton pixel represents ~res_mm of centerline,
+    # regardless of how the branches connect -- capture that total before
+    # _walk_skeleton below restricts to a single path through the tree.
+    total_skeleton_length_mm = len(coords_px) * res_mm
+
     order = _walk_skeleton(coords_px)
     ordered_coords = [coords_px[i] for i in order]
 
     path_points_mm = [(ox + x * res_mm, oy + y * res_mm) for x, y in ordered_coords]
     widths_mm = [distance[y, x] * 2 * res_mm for x, y in ordered_coords]
-    return MedialAxisResult(path_points_mm, widths_mm)
+    return MedialAxisResult(path_points_mm, widths_mm, total_skeleton_length_mm)

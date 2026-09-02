@@ -9,8 +9,15 @@ from src.regions.scale import scale_region_set
 from src.regions.scope import apply_findings, check_min_feature_size
 from src.report import write_and_report
 from src.stitches.build import build_blocks_for_region
-from src.stitches.model import StitchBlock, StitchPlan
+from src.stitches.model import FILL, RUNNING, SATIN, StitchBlock, StitchPlan
 from src.validate.checks import validate_plan
+
+# A region classified with confidence below this is close enough to a
+# decision boundary (or, for fill, close enough to the satin thresholds)
+# that it's worth a human glance -- surfaced as both a warning and a
+# per-region flag, not silently accepted. See src/params/classify.py's
+# Classification.confidence docstring for how this number is computed.
+LOW_CONFIDENCE_THRESHOLD = 0.4
 
 
 def digitize_image(input_path: str, fabric_name: str, out_stem: str,
@@ -67,9 +74,55 @@ def digitize_image(input_path: str, fabric_name: str, out_stem: str,
     plan = StitchPlan(blocks=ordered, colors=region_set.colors)
 
     warnings.extend(validate_plan(plan, fabric, classifications))
+
+    regions_meta = []
+    counts = {FILL: 0, SATIN: 0, RUNNING: 0}
+    texture_zone_count = 0
+    needs_review_count = 0
+    for region, classification in classifications:
+        counts[classification.stitch_type] = counts.get(classification.stitch_type, 0) + 1
+        if region.texture_zone:
+            texture_zone_count += 1
+        needs_review = classification.confidence < LOW_CONFIDENCE_THRESHOLD
+        if needs_review:
+            needs_review_count += 1
+            warnings.append(
+                f"Region '{region.region_id}' ({classification.stitch_type}) "
+                f"classified with low confidence ({classification.confidence:.2f}) "
+                f"-- {classification.reason} Worth a manual look.")
+        color = region_set.colors[region.color_index] if region.color_index < len(region_set.colors) else None
+        regions_meta.append({
+            "id": region.region_id,
+            "color_index": region.color_index,
+            "z_order": region.z_order,
+            "stitch_type": classification.stitch_type,
+            "reason": classification.reason,
+            "confidence": round(classification.confidence, 2),
+            "needs_review": needs_review,
+            "redirected_from_satin": classification.redirected_from_satin,
+            "texture_zone": region.texture_zone,
+            "texture_confidence": region.texture_confidence,
+            "thread_name": color.matched_thread_name if color else "",
+            "thread_code": color.matched_thread_code if color else "",
+            "thread_delta_e": color.thread_delta_e if color else 0.0,
+            "thread_rgb_hex": ("#%02x%02x%02x" % color.rgb) if color else "#888888",
+        })
+
+    summary = {
+        "visual_colors_detected": region_set.raw_color_count,
+        "thread_colors_selected": len(region_set.colors),
+        "filled_regions": counts.get(FILL, 0),
+        "satin_columns": counts.get(SATIN, 0),
+        "running_stitch_details": counts.get(RUNNING, 0),
+        "texture_zones": texture_zone_count,
+        "warnings_requiring_review": needs_review_count,
+    }
+
     for w in warnings:
         print(f"Warning: {w}")
 
     result = write_and_report(plan, out_stem)
     result["warnings"] = warnings
+    result["summary"] = summary
+    result["regions"] = regions_meta
     return result

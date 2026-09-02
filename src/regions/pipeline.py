@@ -23,13 +23,16 @@ def load_and_extract_regions(path: str, dpi_override: float | None = None,
     ext = os.path.splitext(path)[1].lower()
 
     dropped_small = 0
+    raw_color_count = merged_color_count = 0
     if ext == ".svg":
         regions, colors, width_mm, height_mm, svg_warnings = extract_svg_regions(path)
         warnings.extend(svg_warnings)
+        raw_color_count = merged_color_count = len(colors)
     else:
         rgb, px_per_mm, load_warnings = load_raster(path, dpi_override)
         warnings.extend(load_warnings)
-        regions, colors, mean_error, dropped_small = extract_raster_regions(rgb, px_per_mm)
+        (regions, colors, mean_error, dropped_small,
+         raw_color_count, merged_color_count) = extract_raster_regions(rgb, px_per_mm)
         h, w = rgb.shape[:2]
         width_mm, height_mm = w / px_per_mm, h / px_per_mm
         apply_findings([check_color_complexity(mean_error)], warnings, strict)
@@ -52,4 +55,5 @@ def load_and_extract_regions(path: str, dpi_override: float | None = None,
     apply_findings([check_min_feature_size(heights_mm)], warnings, strict)
 
     return RegionSet(regions=regions, colors=colors,
-                      width_mm=width_mm, height_mm=height_mm, warnings=warnings)
+                      width_mm=width_mm, height_mm=height_mm, warnings=warnings,
+                      raw_color_count=raw_color_count, merged_color_count=merged_color_count)

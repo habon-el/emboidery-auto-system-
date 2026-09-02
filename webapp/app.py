@@ -69,6 +69,24 @@ def _page(body: str) -> str:
   .legend {{ display: flex; gap: 16px; margin-top: 8px; font-size: 0.85rem; color: #555; }}
   .legend span {{ display: inline-flex; align-items: center; gap: 6px; }}
   .swatch {{ width: 14px; height: 3px; display: inline-block; }}
+  .summary-bar {{ display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 14px 0;
+                  font-size: 0.88rem; color: #333; }}
+  .summary-bar b {{ color: #111; }}
+  .summary-bar .review {{ color: #a94442; font-weight: 600; }}
+  table.regions {{ width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 0.85rem; }}
+  table.regions th, table.regions td {{ text-align: left; padding: 6px 8px;
+                                         border-bottom: 1px solid #eee; }}
+  table.regions th {{ color: #666; font-weight: 600; font-size: 0.78rem;
+                       text-transform: uppercase; letter-spacing: 0.02em; }}
+  table.regions tr.needs-review {{ background: #fff8e1; }}
+  .chip {{ display: inline-block; padding: 1px 8px; border-radius: 100px;
+           font-size: 0.75rem; font-weight: 600; }}
+  .chip.satin {{ background: #e3ecfa; color: #1c5aaa; }}
+  .chip.fill {{ background: #eafaf0; color: #1a7a41; }}
+  .chip.running {{ background: #f3ecfa; color: #6a3aa9; }}
+  .thread-dot {{ display: inline-block; width: 10px; height: 10px; border-radius: 3px;
+                 margin-right: 5px; vertical-align: -1px; box-shadow: 0 0 0 1px rgba(0,0,0,.15) inset; }}
+  details.region-details summary {{ cursor: pointer; font-weight: 600; margin-top: 18px; }}
 </style>
 </head>
 <body>
@@ -250,6 +268,55 @@ def _stitch_player_html(job_id: str) -> str:
 {js}"""
 
 
+def _analysis_summary_html(result: dict) -> str:
+    """Read-only view of the Multi-Region Illustration Digitization
+    milestone's analysis summary (item 11) -- the counts panel plus a
+    per-region table with each classification's reason, confidence, and
+    matched thread. Interactive per-region correction (changing stitch
+    type/density/angle/etc. and re-rendering just that region) is the
+    next step on top of this, not yet built -- this is the read-only
+    "see the decisions" half of that flow.
+    """
+    s = result["summary"]
+    review_class = "review" if s["warnings_requiring_review"] else ""
+    summary_bar = f"""
+<div class="summary-bar">
+  <span><b>{s['visual_colors_detected']}</b> visual colors detected</span>
+  <span><b>{s['thread_colors_selected']}</b> thread colors selected</span>
+  <span><b>{s['filled_regions']}</b> filled regions</span>
+  <span><b>{s['satin_columns']}</b> satin columns</span>
+  <span><b>{s['running_stitch_details']}</b> running-stitch details</span>
+  <span><b>{s['texture_zones']}</b> texture zones</span>
+  <span class="{review_class}"><b>{s['warnings_requiring_review']}</b> warning(s) requiring review</span>
+</div>"""
+
+    def row(r: dict) -> str:
+        cls = "needs-review" if r["needs_review"] else ""
+        delta_note = (f" (Δ{r['thread_delta_e']:.1f})" if r["thread_delta_e"] > 0.5 else "")
+        texture = "yes" if r["texture_zone"] else "&ndash;"
+        return f"""<tr class="{cls}">
+  <td>{r['id']}</td>
+  <td><span class="chip {r['stitch_type']}">{r['stitch_type']}</span></td>
+  <td><span class="thread-dot" style="background:{r['thread_rgb_hex']};"></span>{r['thread_name']}{delta_note}</td>
+  <td>{r['confidence']:.2f}</td>
+  <td>{texture}</td>
+  <td style="color:#666;">{r['reason']}</td>
+</tr>"""
+
+    rows = "".join(row(r) for r in result["regions"])
+    table = f"""
+<details class="region-details" open>
+  <summary>Per-region analysis ({len(result['regions'])} regions)</summary>
+  <div style="overflow-x:auto;">
+    <table class="regions">
+      <tr><th>Region</th><th>Stitch type</th><th>Thread</th><th>Confidence</th><th>Texture</th><th>Why</th></tr>
+      {rows}
+    </table>
+  </div>
+</details>"""
+    return summary_bar + table
+
+
 def _parse_optional_float(value: str | None) -> float | None:
     if not value:
         return None
@@ -295,6 +362,7 @@ def _run_and_render(job_id: str, input_path: str, fabric: str, border: float,
   <p class="stat"><b>{result['runtime_formatted']}</b>est. run time</p>
   <p class="stat"><b>{fabric}</b>fabric</p>
   {warnings_html}
+  {_analysis_summary_html(result)}
   <div style="margin-top:16px;">
     <img class="preview" src="/outputs/{job_id}/design_preview.png" alt="Stitch preview">
   </div>

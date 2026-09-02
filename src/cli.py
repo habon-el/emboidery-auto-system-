@@ -23,9 +23,17 @@ def cmd_demo(args: argparse.Namespace) -> None:
 
 
 def cmd_digitize(args: argparse.Namespace) -> None:
-    digitize_image(args.input, args.fabric, args.out,
-                    border_width_mm=args.border, force=args.force,
-                    target_width_mm=args.width_mm, target_height_mm=args.height_mm)
+    result = digitize_image(args.input, args.fabric, args.out,
+                             border_width_mm=args.border, force=args.force,
+                             target_width_mm=args.width_mm, target_height_mm=args.height_mm)
+    s = result["summary"]
+    print(f"Analysis: {s['visual_colors_detected']} visual colors detected "
+          f"· {s['thread_colors_selected']} thread colors selected "
+          f"· {s['filled_regions']} filled regions "
+          f"· {s['satin_columns']} satin columns "
+          f"· {s['running_stitch_details']} running-stitch details "
+          f"· {s['texture_zones']} texture zones "
+          f"· {s['warnings_requiring_review']} warning(s) requiring review")
 
 
 def build_parser() -> argparse.ArgumentParser:

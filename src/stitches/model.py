@@ -42,6 +42,15 @@ class StitchBlock:
 class ThreadColor:
     name: str
     rgb: tuple[int, int, int] = (0, 0, 0)
+    # Nearest real manufacturer thread (src/params/thread_palette.py),
+    # filled in by the pipeline once the source color is known. rgb above
+    # stays the exact source/design color (used for preview and export)
+    # regardless of the match -- these fields are the *recommendation*,
+    # surfaced separately so a large delta_e reads as "approximate," not
+    # silently swapped in.
+    matched_thread_name: str = ""
+    matched_thread_code: str = ""
+    thread_delta_e: float = 0.0
 
 
 @dataclass
