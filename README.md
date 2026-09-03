@@ -159,6 +159,15 @@ on a long gap, leaving the machine to jump there with the thread still
 attached) — see `StitchBlock.force_trim_before` and
 `src/review/corrections.py`'s `force_trim` field.
 
+Every trim also gets a **tie-in/tie-out lock stitch**: a tiny
+there-and-back needle penetration right at the cut on both sides of it
+(`src/io_/export.py`), so a trimmed thread end can't work loose off the
+machine — standard practice in real digitizing software, and not
+something a fabric preset or design choice tunes away (a cut thread end
+needs anchoring regardless of fabric). Only an actual cut gets one; a
+plain travel jump with no trim is still the same physically continuous
+thread, so nothing needs anchoring there.
+
 Leaving a field blank keeps the automatic decision; submitting only
 changes the regions you touched (`src/review/corrections.py`) and
 re-runs classification for every region fresh rather than caching

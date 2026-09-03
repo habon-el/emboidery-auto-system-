@@ -54,11 +54,14 @@ def test_dst_and_pes_round_trip(tmp_path):
 
     # A single-color design should read back with zero color changes and
     # a stitch count matching what we asked pyembroidery to write, within
-    # rounding from the mm -> 1/10mm unit conversion.
+    # rounding from the mm -> 1/10mm unit conversion plus the JUMP/TRIM
+    # and tie-in/tie-out lock stitches (src/io_/export.py) a real cut
+    # between this demo's underlay and fill blocks adds -- neither is
+    # part of plan.stitch_count() (which only counts StitchBlock points).
     assert dst.count_color_changes() == 0
     assert pes.count_color_changes() == 0
-    assert abs(len(dst.stitches) - plan.stitch_count()) <= 5
-    assert abs(len(pes.stitches) - plan.stitch_count()) <= 5
+    assert abs(len(dst.stitches) - plan.stitch_count()) <= 10
+    assert abs(len(pes.stitches) - plan.stitch_count()) <= 10
 
     minx, miny, maxx, maxy = (v / 10 for v in dst.bounds())
     assert minx == pytest.approx(-EXPECTED_RADIUS_MM, abs=BOUNDS_TOLERANCE_MM)
