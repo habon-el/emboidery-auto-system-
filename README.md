@@ -203,6 +203,28 @@ rejected, because the rejection check ran on the *source* image's native
 ran (`src/pipeline.py`'s `load_scaled_region_set`). The check now
 correctly runs on the size that actually matters — after scaling.
 
+### Complex shapes: fill never sews across open fabric
+
+Row segments are joined into a continuous run only when the stitch
+connecting them actually stays **inside** the shape
+(`src/stitches/fill.py`'s `_runs_from_segments`); otherwise the run
+ends and `src/pathing/route.py` puts a real jump there.
+
+This used to be a distance guess instead — join anything closer than
+2.5x a stitch length. That's harmless on a convex blob, which is why
+simple test shapes never caught it, but wrong on anything concave or
+multi-part: running a multi-region badge illustration through the
+pipeline showed up to **271mm of thread per region being sewn straight
+across open fabric** — through a star's notches, across a ring's hole —
+in individual stitches up to 7.4mm long, because those gaps happened to
+fall under the threshold.
+
+The containment test runs against the shape grown by a hair
+(`CONTAINMENT_EPSILON_MM`): a connector running exactly *along* an edge
+is geometrically ambiguous, and without that nudge shapely flips
+between "inside" and "outside" on floating-point jitter, splitting
+edge-hugging runs at random and costing a needless trim each time.
+
 ### Manual region review
 
 A real correction workflow, not just a read-only report: every

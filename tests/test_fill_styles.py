@@ -241,3 +241,63 @@ def test_per_region_angle_correction_still_beats_the_design_wide_angle(tmp_path)
     corrected = rebuild_job(spec, str(tmp_path / "corrected"))
     by_id = {r["id"]: r for r in corrected["regions"]}
     assert "manually overridden" in by_id[target["id"]]["reason"]
+
+
+# -- fill must never sew across open fabric -------------------------------
+
+def _star_polygon(r_outer=15.0, r_inner=6.0, points=5):
+    import math
+    pts = []
+    for i in range(points * 2):
+        r = r_outer if i % 2 == 0 else r_inner
+        a = math.radians(-90 + i * 360 / (points * 2))
+        pts.append((r * math.cos(a), r * math.sin(a)))
+    return Polygon(pts)
+
+
+def _stitching_outside_mm(runs, polygon, epsilon_mm=0.05):
+    """Total length of fill stitching that lies outside the shape.
+    Measured against the shape grown by a hair, because a stitch that
+    runs exactly *along* an edge is geometrically ambiguous and shapely
+    flips on floating-point jitter there -- that's boundary grazing,
+    not thread crossing open fabric."""
+    from shapely.geometry import LineString
+    grown = polygon.buffer(epsilon_mm)
+    total = 0.0
+    for run in runs:
+        for a, b in zip(run, run[1:]):
+            seg = LineString([a, b])
+            total += max(0.0, seg.length - seg.intersection(grown).length)
+    return total
+
+
+@pytest.mark.parametrize("shape_name", ["star", "ring"])
+def test_fill_never_stitches_across_open_fabric(shape_name):
+    """Regression test for a real bug found by running a multi-region
+    badge illustration through the pipeline: row segments were joined
+    into one continuous run by a fixed distance guess (anything closer
+    than 2.5x a stitch length), so on a concave or multi-part shape any
+    gap under that threshold got a real stitch sewn straight across it
+    -- through a star's notches, across a ring's hole. It measured up to
+    271mm of thread crossing open fabric on a single region, with
+    individual stitches 7.4mm long. A convex blob never triggers it,
+    which is why simple test shapes missed it for so long.
+
+    Segments are now joined only when the connecting stitch actually
+    stays inside the shape (src/stitches/fill.py's _runs_from_segments)."""
+    polygon = _star_polygon() if shape_name == "star" else _ring_polygon()
+    for runs in (generate_fill(polygon, 45.0, 0.4, 3.0),
+                  generate_brick_fill(polygon, 45.0, 0.4, 3.0)):
+        assert runs, f"{shape_name} produced no fill"
+        outside = _stitching_outside_mm(runs, polygon)
+        assert outside < 1.0, (
+            f"{shape_name}: {outside:.1f}mm of fill stitching crosses open fabric")
+
+
+def test_a_convex_shape_still_fills_as_one_continuous_run():
+    """The containment check must not fragment a shape that genuinely
+    needs no jumps -- a plain square should still come out as a single
+    boustrophedon run, not one run per row."""
+    poly, _ = _square_region(size_mm=20.0)
+    runs = generate_fill(poly, 45.0, 0.4, 3.0)
+    assert len(runs) == 1, f"a convex square fragmented into {len(runs)} runs"

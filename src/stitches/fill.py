@@ -32,6 +32,22 @@ from shapely.geometry import LineString, Polygon
 from .model import Point
 from .running import resample_path
 
+# How far a segment-to-segment connector may stray outside the shape
+# before it has to become a jump instead of a stitch. Small enough to
+# catch a real crossing, large enough to tolerate the boundary noise a
+# rasterized/simplified contour carries.
+CONNECTOR_OUTSIDE_TOLERANCE_MM = 0.3
+
+# The containment test runs against the shape grown by this much. A
+# connector that runs *along* an edge is geometrically ambiguous --
+# shapely's intersection flips between "fully inside" and "fully
+# outside" on ~1e-5 of floating-point jitter there -- and without this
+# nudge those edge-hugging connectors get split at random, each costing
+# a needless jump/trim. It does not weaken the real test: an actual
+# crossing (a star's notch, a ring's hole) is orders of magnitude
+# wider than this.
+CONTAINMENT_EPSILON_MM = 0.05
+
 
 def _row_segments(polygon: Polygon, y: float, xmin: float, xmax: float
                    ) -> list[tuple[float, float]]:
@@ -50,28 +66,46 @@ def _row_segments(polygon: Polygon, y: float, xmin: float, xmax: float
     return segs
 
 
-def _runs_from_rotated_points(points_rot: list[Point], angle_deg: float, centroid,
-                               stitch_length_mm: float, row_spacing_mm: float
-                               ) -> list[list[Point]]:
-    """Shared tail end of the row-scan generators: rotate the scanned
-    points back into design space, then split into separate runs
-    wherever consecutive points are farther apart than a normal
-    within-row/between-row step -- that gap means the scan crossed a
-    hole or a disjoint part of the shape."""
-    if not points_rot:
+def _runs_from_segments(segments_rot: list[list[Point]], angle_deg: float, centroid,
+                         rotated_polygon: Polygon) -> list[list[Point]]:
+    """Shared tail end of the row-scan generators: join consecutive row
+    segments into continuous runs, then rotate back into design space.
+
+    Two consecutive segments are joined only when the stitch that would
+    connect them actually stays *inside* the shape. This used to be a
+    distance guess instead (join anything closer than 2.5x a stitch
+    length), which is fine for a convex blob but wrong for any concave
+    or multi-part shape: on a real badge illustration it sewed up to
+    271mm of thread straight across open fabric per region -- through a
+    star's notches, across a ring's hole, between a letter's arms --
+    because those gaps happened to be under the threshold. A gap that
+    leaves the shape needs a jump, not a stitch, no matter how short it
+    is (Section 9: don't fake it -- src/pathing/route.py inserts the
+    real JUMP/TRIM between runs at export time).
+    """
+    if not segments_rot:
         return []
 
-    line = LineString(points_rot)
-    line = affinity.rotate(line, angle_deg, origin=centroid)
-    points = [(round(x, 4), round(y, 4)) for x, y in line.coords]
+    test_shape = rotated_polygon.buffer(CONTAINMENT_EPSILON_MM)
+    runs_rot: list[list[Point]] = [list(segments_rot[0])]
+    for seg in segments_rot[1:]:
+        connector = LineString([runs_rot[-1][-1], seg[0]])
+        # A small tolerance: a rasterized contour's own boundary noise
+        # can put a legitimate edge-hugging stitch a hair outside the
+        # simplified polygon, which shouldn't force a needless trim.
+        outside = connector.length - connector.intersection(test_shape).length
+        if outside > CONNECTOR_OUTSIDE_TOLERANCE_MM:
+            runs_rot.append(list(seg))
+        else:
+            runs_rot[-1].extend(seg)
 
-    break_threshold_mm = max(stitch_length_mm, row_spacing_mm) * 2.5
-    runs: list[list[Point]] = [[points[0]]]
-    for (x0, y0), (x1, y1) in zip(points, points[1:]):
-        if math.hypot(x1 - x0, y1 - y0) > break_threshold_mm:
-            runs.append([])
-        runs[-1].append((x1, y1))
-    return [r for r in runs if len(r) >= 2]
+    runs: list[list[Point]] = []
+    for run in runs_rot:
+        if len(run) < 2:
+            continue
+        line = affinity.rotate(LineString(run), angle_deg, origin=centroid)
+        runs.append([(round(x, 4), round(y, 4)) for x, y in line.coords])
+    return runs
 
 
 def generate_fill(polygon: Polygon, angle_deg: float, row_spacing_mm: float,
@@ -85,7 +119,9 @@ def generate_fill(polygon: Polygon, angle_deg: float, row_spacing_mm: float,
     rotated = affinity.rotate(polygon, -angle_deg, origin=centroid)
     xmin, ymin, xmax, ymax = rotated.bounds
 
-    points_rot: list[Point] = []
+    # One entry per row segment (the run-splitting decision is made
+    # between segments, not by guessing from stitch distance).
+    segments_rot: list[list[Point]] = []
     y = ymin + row_spacing_mm / 2
     row_idx = 0
     while y <= ymax:
@@ -95,14 +131,12 @@ def generate_fill(polygon: Polygon, angle_deg: float, row_spacing_mm: float,
             for (x0, x1) in ordered:
                 lo, hi = (x0, x1) if row_idx % 2 == 0 else (x1, x0)
                 n_steps = max(1, int(abs(hi - lo) / stitch_length_mm))
-                for step in range(n_steps + 1):
-                    x = lo + (hi - lo) * step / n_steps
-                    points_rot.append((x, y))
+                segments_rot.append([
+                    (lo + (hi - lo) * step / n_steps, y) for step in range(n_steps + 1)])
         row_idx += 1
         y += row_spacing_mm
 
-    return _runs_from_rotated_points(points_rot, angle_deg, centroid,
-                                      stitch_length_mm, row_spacing_mm)
+    return _runs_from_segments(segments_rot, angle_deg, centroid, rotated)
 
 
 def generate_brick_fill(polygon: Polygon, angle_deg: float, row_spacing_mm: float,
@@ -119,7 +153,7 @@ def generate_brick_fill(polygon: Polygon, angle_deg: float, row_spacing_mm: floa
     rotated = affinity.rotate(polygon, -angle_deg, origin=centroid)
     xmin, ymin, xmax, ymax = rotated.bounds
 
-    points_rot: list[Point] = []
+    segments_rot: list[list[Point]] = []
     y = ymin + row_spacing_mm / 2
     row_idx = 0
     while y <= ymax:
@@ -131,17 +165,17 @@ def generate_brick_fill(polygon: Polygon, angle_deg: float, row_spacing_mm: floa
                 lo, hi = (x0, x1) if row_idx % 2 == 0 else (x1, x0)
                 direction = 1.0 if hi >= lo else -1.0
                 span = abs(hi - lo)
-                points_rot.append((lo, y))
+                seg_points: list[Point] = [(lo, y)]
                 pos = row_phase if row_phase > 0 else stitch_length_mm
                 while pos < span:
-                    points_rot.append((lo + direction * pos, y))
+                    seg_points.append((lo + direction * pos, y))
                     pos += stitch_length_mm
-                points_rot.append((hi, y))
+                seg_points.append((hi, y))
+                segments_rot.append(seg_points)
         row_idx += 1
         y += row_spacing_mm
 
-    return _runs_from_rotated_points(points_rot, angle_deg, centroid,
-                                      stitch_length_mm, row_spacing_mm)
+    return _runs_from_segments(segments_rot, angle_deg, centroid, rotated)
 
 
 def generate_crosshatch_fill(polygon: Polygon, angle_deg: float, row_spacing_mm: float,
