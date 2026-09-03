@@ -20,7 +20,8 @@ from src.report import write_and_report
 from src.review.corrections import RegionOverride, resolve_override
 from src.stitches.build import build_blocks_for_region
 from src.stitches.model import (DEFAULT_FILL_STYLE, FILL, FILL_STYLES, RUNNING,
-                                 SATIN, StitchBlock, StitchPlan, ThreadColor)
+                                 SATIN, UNIFORM_FILL_ANGLE_DEG, StitchBlock,
+                                 StitchPlan, ThreadColor)
 from src.validate.checks import validate_plan
 
 # A region classified with confidence below this is close enough to a
@@ -67,7 +68,8 @@ def digitize_image(input_path: str, fabric_name: str, out_stem: str,
                     border_width_mm: float = 0.0, force: bool = False,
                     target_width_mm: float | None = None,
                     target_height_mm: float | None = None,
-                    fill_style: str = DEFAULT_FILL_STYLE) -> dict:
+                    fill_style: str = DEFAULT_FILL_STYLE,
+                    fill_angle_deg: float | None = UNIFORM_FILL_ANGLE_DEG) -> dict:
     """Runs the full pipeline and returns a dict: the write_and_report()
     result (dst/pes/preview paths, stitch_count, runtime) plus a
     "warnings" list, an analysis "summary", and per-region "regions"
@@ -93,6 +95,11 @@ def digitize_image(input_path: str, fabric_name: str, out_stem: str,
     automatically: an unrecognized value is rejected rather than
     silently substituted, on the same principle as an unknown fabric
     preset.
+
+    fill_angle_deg is the design-wide fill *direction* every FILL
+    region stitches at -- see src/stitches/model.py's
+    UNIFORM_FILL_ANGLE_DEG for why one shared angle is the default and
+    what None (per-shape angles) means.
     """
     if fill_style not in FILL_STYLES:
         raise ValueError(f"fill_style must be one of {sorted(FILL_STYLES)}, got {fill_style!r}.")
@@ -100,13 +107,15 @@ def digitize_image(input_path: str, fabric_name: str, out_stem: str,
     region_set, warnings = load_scaled_region_set(
         input_path, force, target_width_mm, target_height_mm)
     return build_and_export(region_set, fabric, out_stem, border_width_mm, warnings,
-                             default_fill_style=fill_style)
+                             default_fill_style=fill_style,
+                             default_fill_angle_deg=fill_angle_deg)
 
 
 def build_and_export(region_set: RegionSet, fabric, out_stem: str,
                       border_width_mm: float, warnings: list[str],
                       corrections: dict[str, RegionOverride] | None = None,
-                      default_fill_style: str = DEFAULT_FILL_STYLE
+                      default_fill_style: str = DEFAULT_FILL_STYLE,
+                      default_fill_angle_deg: float | None = UNIFORM_FILL_ANGLE_DEG
                       ) -> dict:
     """Classification, per-region correction overrides, stitch
     generation, pathing, validation, export, and the analysis summary --
@@ -125,13 +134,20 @@ def build_and_export(region_set: RegionSet, fabric, out_stem: str,
     design-wide fill pattern every FILL-type region uses unless its own
     correction overrides it (RegionOverride.fill_style).
 
+    default_fill_angle_deg is the design-wide fill *direction* (see
+    src/stitches/model.py's UNIFORM_FILL_ANGLE_DEG): applied to every
+    FILL region before per-region corrections, so a region whose own
+    correction sets an angle still wins. None keeps each region's own
+    medial-axis angle. Satin is untouched either way -- a satin
+    column's direction comes from its rails, not from this angle.
+
     Returns write_and_report()'s dict plus:
       "warnings": list[str]
       "summary": {visual_colors_detected, thread_colors_selected,
                   filled_regions, satin_columns, running_stitch_details,
                   texture_zones, warnings_requiring_review}
       "regions": [{id, color_index, z_order, stitch_type, fill_style,
-                   reason, confidence, needs_review, redirected_from_satin,
+                   angle_deg, reason, confidence, needs_review, redirected_from_satin,
                    texture_zone, texture_confidence, thread_name,
                    thread_code, thread_delta_e, thread_rgb_hex,
                    corrected, bbox_pct}, ...]
@@ -151,6 +167,14 @@ def build_and_export(region_set: RegionSet, fabric, out_stem: str,
 
     for region in region_set.regions:
         classification = classify_region(region, fabric)
+        if default_fill_angle_deg is not None and classification.stitch_type == FILL:
+            # One shared direction for every filled region (see
+            # src/stitches/model.py's UNIFORM_FILL_ANGLE_DEG). Applied
+            # *before* resolve_override so a region whose own correction
+            # sets an angle still wins, and only to FILL -- satin takes
+            # its direction from its rails, and running stitch follows
+            # its own centerline.
+            classification = replace(classification, angle_deg=default_fill_angle_deg)
         override = corrections.get(region.region_id)
         eff_classification, eff_fabric, eff_border, eff_fill_style, include_underlay = resolve_override(
             classification, fabric, border_width_mm, default_fill_style, override)
@@ -244,6 +268,7 @@ def build_and_export(region_set: RegionSet, fabric, out_stem: str,
             "z_order": z_order_by_element[region.region_id],
             "stitch_type": classification.stitch_type,
             "fill_style": fill_style_by_element[region.region_id],
+            "angle_deg": round(classification.angle_deg, 2),
             "reason": classification.reason,
             "confidence": round(classification.confidence, 2),
             "needs_review": needs_review,

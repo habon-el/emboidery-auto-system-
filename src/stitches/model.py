@@ -37,6 +37,28 @@ FILL_BRICK = "brick"
 FILL_STYLES = (FILL_TATAMI, FILL_CONTOUR, FILL_CROSSHATCH, FILL_BRICK)
 DEFAULT_FILL_STYLE = FILL_TATAMI
 
+# One shared fill *direction* for every filled region in a design,
+# rather than each region deriving its own angle from its own medial
+# axis (src/regions/medial.py's angle_deg).
+#
+# Per-shape angles are mathematically reasonable and visually wrong: in
+# a real "Hello world!" run, H and w came out stitched horizontally,
+# e/o/o vertically, r at -69 degrees and d at -44 -- five directions in
+# a single word. Embroidery thread is directional, so each of those
+# reflects light differently and the word reads as a set of mismatched
+# letters rather than one piece of lettering. Real digitizers give a
+# word (or any text block) one angle for exactly that reason -- it's
+# what "set stitch angle lines to control light reflection" means.
+#
+# 45 degrees is the standard default: unlike 0/90 it doesn't line up
+# with the fabric's own weave (where fill rows can sink between the
+# threads), and it reads evenly under light from any direction.
+#
+# None restores per-shape angles, which is still the right choice for
+# an illustration whose shapes genuinely should flow in their own
+# directions (a mascot's limbs, a swoosh) rather than text.
+UNIFORM_FILL_ANGLE_DEG = 45.0
+
 FILL_STYLE_LABELS = {
     FILL_TATAMI: "Tatami (standard rows)",
     FILL_CONTOUR: "Contour (follows the shape's edge)",

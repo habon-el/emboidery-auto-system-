@@ -15,7 +15,7 @@ import json
 import os
 from dataclasses import asdict, dataclass, field
 
-from src.stitches.model import DEFAULT_FILL_STYLE
+from src.stitches.model import DEFAULT_FILL_STYLE, UNIFORM_FILL_ANGLE_DEG
 
 SPEC_FILENAME = "job_spec.json"
 
@@ -32,6 +32,11 @@ class JobSpec:
     # FILL_STYLES), chosen once at upload; a per-region correction can
     # still override just one region (RegionOverride.fill_style below).
     default_fill_style: str = DEFAULT_FILL_STYLE
+    # The design-wide fill *direction* in degrees (src/pipeline.py's
+    # UNIFORM_FILL_ANGLE_DEG), so every filled region in one design
+    # stitches the same way instead of each picking its own angle.
+    # None = per-shape angles (each region's own medial axis).
+    default_fill_angle_deg: float | None = UNIFORM_FILL_ANGLE_DEG
     # region_id -> a RegionOverride's fields, i.e. dataclasses.asdict()
     # of the result of src/review/corrections.py's parse_region_override()
     # -- already validated and type-converted (bool/float/int/tuple, not
@@ -52,6 +57,7 @@ class JobSpec:
             force=d.get("force", False),
             width_mm=d.get("width_mm"), height_mm=d.get("height_mm"),
             default_fill_style=d.get("default_fill_style", DEFAULT_FILL_STYLE),
+            default_fill_angle_deg=d.get("default_fill_angle_deg", UNIFORM_FILL_ANGLE_DEG),
             corrections=d.get("corrections", {}))
 
 

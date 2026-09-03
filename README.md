@@ -136,6 +136,40 @@ pattern every other per-region correction already uses. See
 `src/stitches/fill.py` for what each style actually generates and
 `src/stitches/model.py`'s `FILL_STYLES`.
 
+### One fill direction for the whole design
+
+Separate from the *pattern* above is the fill **direction**, and it
+matters just as much: embroidery thread is directional, so the angle a
+shape is filled at decides how it catches the light.
+
+Every region used to derive its own angle from its own medial axis.
+That's mathematically reasonable and visually wrong — on a real
+"Hello world!" the letters came out stitched in five different
+directions at once:
+
+| Letter | H | e | o | w | o | r | d |
+|---|---|---|---|---|---|---|---|
+| Angle | 173° | -99° | -99° | -176° | -98° | -69° | -44° |
+
+H and w horizontal, e/o/o vertical, r and d diagonal — so each letter
+caught the light differently and the word read as a set of mismatched
+letters instead of one piece of lettering. Real digitizers give a word
+or text block **one** angle for exactly this reason.
+
+The default is now a single shared **45°** for every filled region in a
+design (`src/stitches/model.py`'s `UNIFORM_FILL_ANGLE_DEG`) — 45°
+because, unlike 0°/90°, it doesn't line up with the fabric's own weave
+where fill rows can sink between the threads. Change it with
+`--fill-angle DEG` (CLI) or the "Fill direction" dropdown (web UI), and
+pass `--fill-angle per-shape` to restore per-region angles, which still
+suit an illustration whose shapes should flow in their own directions
+(a mascot's limbs, a swoosh) rather than text. A per-region angle
+correction in **Manual region review** still overrides whatever the
+design-wide setting is.
+
+Satin columns are unaffected either way — a satin column takes its
+direction from its own rails, not from this angle.
+
 ### Text & sizing tips
 
 Two real, user-reported issues worth knowing about when digitizing text:

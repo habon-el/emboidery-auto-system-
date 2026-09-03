@@ -22,7 +22,8 @@ from src.pipeline import digitize_image
 from src.regions.model import DigitizeScopeError
 from src.review.corrections import CorrectionValidationError, parse_correction_form
 from src.review.rebuild import rebuild_job
-from src.stitches.model import DEFAULT_FILL_STYLE, FILL_STYLE_LABELS, FILL_STYLES
+from src.stitches.model import (DEFAULT_FILL_STYLE, FILL_STYLE_LABELS,
+                                 FILL_STYLES, UNIFORM_FILL_ANGLE_DEG)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RESULTS_DIR = os.path.join(BASE_DIR, "results")
@@ -173,6 +174,21 @@ UPLOAD_FORM = f"""
       samples as a reference.
     </p>
     {_fill_style_picker_html("fill_style", DEFAULT_FILL_STYLE, "upload")}
+
+    <label>Fill direction</label>
+    <select name="fill_angle">
+      <option value="45">One direction for the whole design &mdash; 45&deg; (recommended)</option>
+      <option value="0">One direction &mdash; 0&deg; (horizontal rows)</option>
+      <option value="90">One direction &mdash; 90&deg; (vertical rows)</option>
+      <option value="135">One direction &mdash; 135&deg;</option>
+      <option value="per-shape">Per shape &mdash; each region picks its own angle</option>
+    </select>
+    <p style="font-size:0.85rem;color:#666;margin-top:4px;">
+      Thread is directional, so fill angle decides how each shape catches
+      the light. One shared direction keeps a word's letters looking like
+      one piece of lettering; "per shape" lets every region follow its own
+      form instead, which suits an illustration more than text.
+    </p>
 
     <label>Finished size (mm, optional)</label>
     <div style="display:flex;gap:10px;">
@@ -522,6 +538,7 @@ def _review_page_html(job_id: str, spec: JobSpec, result: dict,
   <p class="stat"><b>{result['runtime_formatted']}</b>est. run time</p>
   <p class="stat"><b>{spec.fabric}</b>fabric</p>
   <p class="stat"><b>{FILL_STYLE_LABELS[spec.default_fill_style]}</b>default fill style</p>
+  <p class="stat"><b>{'per shape' if spec.default_fill_angle_deg is None else f'{spec.default_fill_angle_deg:g}&deg;'}</b>fill direction</p>
   {_analysis_summary_html_bar_only(result)}
 
   <div class="preview-frame">
@@ -572,6 +589,22 @@ def _analysis_summary_html_bar_only(result: dict) -> str:
 </div>"""
 
 
+def _parse_fill_angle(raw: str | None) -> float | None:
+    """The upload form's fill-direction select: a number of degrees, or
+    "per-shape" to let every region keep its own medial-axis angle.
+    Anything unrecognized falls back to the recommended shared angle
+    rather than erroring -- this is a dropdown, not free text, so a bad
+    value means a tampered/stale form, not a user mistake worth a page."""
+    if raw is None:
+        return UNIFORM_FILL_ANGLE_DEG
+    if raw.strip().lower() in ("per-shape", "per_shape", "auto", "none"):
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return UNIFORM_FILL_ANGLE_DEG
+
+
 def _parse_optional_float(value: str | None) -> float | None:
     if not value:
         return None
@@ -585,7 +618,9 @@ def _parse_optional_float(value: str | None) -> float | None:
 def _run_and_render(job_id: str, input_path: str, fabric: str, border: float,
                      force: bool, width_mm: float | None = None,
                      height_mm: float | None = None,
-                     fill_style: str = DEFAULT_FILL_STYLE) -> tuple[str, int]:
+                     fill_style: str = DEFAULT_FILL_STYLE,
+                     fill_angle_deg: float | None = UNIFORM_FILL_ANGLE_DEG
+                     ) -> tuple[str, int]:
     job_dir = os.path.dirname(input_path)
     out_stem = os.path.join(job_dir, "design")
 
@@ -593,7 +628,7 @@ def _run_and_render(job_id: str, input_path: str, fabric: str, border: float,
         result = digitize_image(input_path, fabric, out_stem,
                                  border_width_mm=border, force=force,
                                  target_width_mm=width_mm, target_height_mm=height_mm,
-                                 fill_style=fill_style)
+                                 fill_style=fill_style, fill_angle_deg=fill_angle_deg)
         # Persist enough of this request to redo it later with manual
         # corrections applied (src/review/rebuild.py) -- only saved on
         # success, so a rejected job has nothing to review until it's
@@ -601,7 +636,7 @@ def _run_and_render(job_id: str, input_path: str, fabric: str, border: float,
         save_job_spec(job_dir, JobSpec(
             input_path=input_path, fabric=fabric, border_width_mm=border,
             force=force, width_mm=width_mm, height_mm=height_mm,
-            default_fill_style=fill_style))
+            default_fill_style=fill_style, default_fill_angle_deg=fill_angle_deg))
     except DigitizeScopeError as e:
         retry = "" if force else f"""
 <form action="/force/{job_id}" method="post" style="margin-top:12px;">
@@ -610,6 +645,7 @@ def _run_and_render(job_id: str, input_path: str, fabric: str, border: float,
   <input type="hidden" name="width_mm" value="{width_mm or ''}">
   <input type="hidden" name="height_mm" value="{height_mm or ''}">
   <input type="hidden" name="fill_style" value="{fill_style}">
+  <input type="hidden" name="fill_angle" value="{'per-shape' if fill_angle_deg is None else fill_angle_deg}">
   <button type="submit" style="background:#a94442;">Force digitize anyway</button>
 </form>"""
         return _page(f'<div class="card error"><p><b>Rejected:</b> {e}</p>'
@@ -629,6 +665,7 @@ def _run_and_render(job_id: str, input_path: str, fabric: str, border: float,
   <p class="stat"><b>{result['runtime_formatted']}</b>est. run time</p>
   <p class="stat"><b>{fabric}</b>fabric</p>
   <p class="stat"><b>{FILL_STYLE_LABELS[fill_style]}</b>fill style</p>
+  <p class="stat"><b>{'per shape' if fill_angle_deg is None else f'{fill_angle_deg:g}&deg;'}</b>fill direction</p>
   {warnings_html}
   {_analysis_summary_html(result)}
   <a class="review-link" href="/review/{job_id}">Review &amp; correct regions &rarr;</a>
@@ -672,6 +709,7 @@ def digitize():
     fill_style = request.form.get("fill_style", DEFAULT_FILL_STYLE)
     if fill_style not in FILL_STYLES:
         fill_style = DEFAULT_FILL_STYLE
+    fill_angle_deg = _parse_fill_angle(request.form.get("fill_angle"))
 
     job_id = uuid.uuid4().hex[:12]
     job_dir = os.path.join(RESULTS_DIR, job_id)
@@ -681,7 +719,7 @@ def digitize():
     file.save(input_path)
 
     return _run_and_render(job_id, input_path, fabric, border, force, width_mm, height_mm,
-                            fill_style)
+                            fill_style, fill_angle_deg)
 
 
 @app.route("/force/<job_id>", methods=["POST"])
@@ -708,9 +746,11 @@ def force_digitize(job_id):
     fill_style = request.form.get("fill_style", DEFAULT_FILL_STYLE)
     if fill_style not in FILL_STYLES:
         fill_style = DEFAULT_FILL_STYLE
+    fill_angle_deg = _parse_fill_angle(request.form.get("fill_angle"))
 
     return _run_and_render(job_id, input_path, fabric, border, force=True,
-                            width_mm=width_mm, height_mm=height_mm, fill_style=fill_style)
+                            width_mm=width_mm, height_mm=height_mm, fill_style=fill_style,
+                            fill_angle_deg=fill_angle_deg)
 
 
 @app.route("/review/<job_id>")

@@ -10,7 +10,8 @@ from src.params.presets import PRESETS, get_preset
 from src.pathing.order import order_by_color_then_distance
 from src.pipeline import digitize_image
 from src.report import write_and_report
-from src.stitches.model import DEFAULT_FILL_STYLE, FILL_STYLES, StitchPlan
+from src.stitches.model import (DEFAULT_FILL_STYLE, FILL_STYLES,
+                                 UNIFORM_FILL_ANGLE_DEG, StitchPlan)
 from src.stitches.shapes import DEMO_THREAD, SHAPES, build_demo_blocks
 
 
@@ -22,11 +23,26 @@ def cmd_demo(args: argparse.Namespace) -> None:
     write_and_report(plan, args.out)
 
 
+def _parse_fill_angle(raw: str) -> float | None:
+    """--fill-angle takes a number of degrees, or the literal
+    "per-shape" to let every region keep its own medial-axis angle
+    (the old behavior -- see src/stitches/model.py's
+    UNIFORM_FILL_ANGLE_DEG for why one shared angle is the default)."""
+    if raw.strip().lower() in ("per-shape", "per_shape", "auto"):
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        raise ValueError(
+            f"--fill-angle must be a number of degrees or 'per-shape', got {raw!r}.")
+
+
 def cmd_digitize(args: argparse.Namespace) -> None:
     result = digitize_image(args.input, args.fabric, args.out,
                              border_width_mm=args.border, force=args.force,
                              target_width_mm=args.width_mm, target_height_mm=args.height_mm,
-                             fill_style=args.fill_style)
+                             fill_style=args.fill_style,
+                             fill_angle_deg=_parse_fill_angle(args.fill_angle))
     s = result["summary"]
     print(f"Analysis: {s['visual_colors_detected']} visual colors detected "
           f"· {s['thread_colors_selected']} thread colors selected "
@@ -79,6 +95,14 @@ def build_parser() -> argparse.ArgumentParser:
                                 "(tatami/contour/crosshatch/brick) -- overridable "
                                 "per region afterward in the web UI's manual "
                                 "review workflow (default: tatami).")
+    digitize.add_argument("--fill-angle", default=str(UNIFORM_FILL_ANGLE_DEG),
+                           dest="fill_angle",
+                           help="One fill direction in degrees for every filled "
+                                "region in the design (default: "
+                                f"{UNIFORM_FILL_ANGLE_DEG:g}), so a word's letters "
+                                "all catch the light the same way instead of each "
+                                "picking its own angle. Pass 'per-shape' to let "
+                                "every region use its own medial-axis angle instead.")
     digitize.add_argument("--out", required=True,
                            help="Output path stem, e.g. testbench/out/design")
     digitize.add_argument("--force", action="store_true",

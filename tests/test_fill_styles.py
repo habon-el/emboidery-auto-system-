@@ -190,3 +190,54 @@ def test_per_region_fill_style_override_beats_job_default(tmp_path):
     for r in corrected["regions"]:
         if r["stitch_type"] == FILL and r["id"] != fill_region["id"]:
             assert r["fill_style"] == FILL_TATAMI
+
+
+# -- design-wide fill direction -------------------------------------------
+
+def test_uniform_fill_angle_gives_every_filled_region_the_same_direction(tmp_path):
+    """Regression test for a real, user-reported quality problem: every
+    region used to derive its own fill angle from its own medial axis,
+    so a single word's letters came out stitched in five different
+    directions (H/w horizontal, e/o/o vertical, r at -69, d at -44) --
+    thread is directional, so each caught the light differently and the
+    word read as mismatched letters instead of one piece of lettering.
+    See src/stitches/model.py's UNIFORM_FILL_ANGLE_DEG."""
+    result = digitize_image(os.path.join(INPUTS, "text_with_bowls.png"), "twill",
+                             str(tmp_path / "uniform"), fill_angle_deg=30.0)
+    fill_angles = {r["angle_deg"] for r in result["regions"] if r["stitch_type"] == FILL}
+    assert fill_angles, "fixture must have filled regions to be meaningful"
+    assert fill_angles == {30.0}, f"filled regions disagree on direction: {fill_angles}"
+
+
+def test_per_shape_angles_still_available_and_actually_differ(tmp_path):
+    """None keeps the old per-shape behavior for illustrations whose
+    shapes should follow their own form -- and on real lettering those
+    angles genuinely do disagree with each other, which is the whole
+    reason the shared angle exists."""
+    from src.params.classify import classify_region
+    from src.params.presets import get_preset
+    from src.regions.pipeline import load_and_extract_regions
+
+    region_set = load_and_extract_regions(os.path.join(INPUTS, "text_with_bowls.png"))
+    fabric = get_preset("twill")
+    angles = {round(classify_region(r, fabric).angle_deg, 1)
+              for r in region_set.regions
+              if classify_region(r, fabric).stitch_type == FILL}
+    assert len(angles) > 1, "per-shape angles should differ across letters"
+
+    result = digitize_image(os.path.join(INPUTS, "text_with_bowls.png"), "twill",
+                             str(tmp_path / "per_shape"), fill_angle_deg=None)
+    assert result["summary"]["filled_regions"] > 0
+
+
+def test_per_region_angle_correction_still_beats_the_design_wide_angle(tmp_path):
+    """The design-wide angle is a default, not a lock: a region whose
+    own correction sets an angle must still win."""
+    baseline = digitize_image(STAR, "twill", str(tmp_path / "baseline"), fill_angle_deg=45.0)
+    target = next(r for r in baseline["regions"] if r["stitch_type"] == FILL)
+
+    spec = JobSpec(input_path=STAR, fabric="twill", default_fill_angle_deg=45.0,
+                    corrections={target["id"]: {"angle_deg": 12.0}})
+    corrected = rebuild_job(spec, str(tmp_path / "corrected"))
+    by_id = {r["id"]: r for r in corrected["regions"]}
+    assert "manually overridden" in by_id[target["id"]]["reason"]
