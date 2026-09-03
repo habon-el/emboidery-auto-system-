@@ -20,6 +20,7 @@ EXPECTED = {
     "bar_satin.png": (350, 1200, 1),
     "star_3color.png": (250, 900, 2),
     "text_sample.png": (70, 500, 1),
+    "text_with_bowls.png": (600, 1300, 1),
     "logo.svg": (700, 2000, 2),
 }
 
@@ -47,6 +48,17 @@ def test_digitize_produces_valid_sewable_files(tmp_path, filename):
     assert min_stitches <= len(dst.stitches) <= max_stitches
     assert min_stitches <= len(pes.stitches) <= max_stitches
     assert dst.count_color_changes() == expected_colors - 1
+
+
+def test_bowled_letters_are_not_misclassified_as_running(tmp_path):
+    """Regression test for a real reported bug: "Hello World" at normal
+    small-text size used to digitize every bowled letter (e, o, o, o, d)
+    as a scribbly running stitch instead of a filled glyph -- see
+    test_m2_classify.py's test_letter_bowl_with_hole_is_fill_not_running
+    for the root cause (a holed region's closed-loop medial axis)."""
+    result = digitize_image(
+        os.path.join(INPUTS, "text_with_bowls.png"), "twill", str(tmp_path / "out"))
+    assert result["summary"]["running_stitch_details"] == 0
 
 
 def test_out_of_scope_input_rejected_end_to_end(tmp_path):

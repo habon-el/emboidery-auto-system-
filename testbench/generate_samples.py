@@ -89,6 +89,25 @@ def make_text_sample():
     save(img, "text_sample.png")
 
 
+def make_text_with_bowls():
+    """"Hello World" at ordinary small-text size -- unlike text_sample.png's
+    "HI", this hits letters with a hole (e, o, o, o, d), which is exactly
+    the shape a real bug misclassified as thin running-stitch line art
+    instead of a filled glyph (see test_letter_bowl_with_hole_is_fill_not_running)."""
+    text = "Hello World"
+    cap_height_mm = 10.0
+    font_size = int(cap_height_mm * PX_PER_MM * 1.2)
+    font = ImageFont.truetype(FONT_PATH, font_size)
+    pad = mm(6)
+    tmp = Image.new("L", (1, 1))
+    bbox = ImageDraw.Draw(tmp).textbbox((0, 0), text, font=font)
+    w, h = bbox[2] - bbox[0] + 2 * pad, bbox[3] - bbox[1] + 2 * pad
+    img = Image.new("RGB", (w, h), "white")
+    draw = ImageDraw.Draw(img)
+    draw.text((pad - bbox[0], pad - bbox[1]), text, font=font, fill=(20, 20, 20))
+    save(img, "text_with_bowls.png")
+
+
 def make_out_of_scope_smalltext():
     """Deliberately below the 6mm minimum cap height -- exercises the
     scope-rejection guardrail (Section 2/9), not a normal success case."""
@@ -196,6 +215,7 @@ def main():
     make_bar_satin()
     make_star_3color()
     make_text_sample()
+    make_text_with_bowls()
     make_out_of_scope_smalltext()
     make_logo_svg()
     make_illustration_badge()

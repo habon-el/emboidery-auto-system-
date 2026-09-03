@@ -1,6 +1,6 @@
 """M2: stitch assignment rules, tested against clean synthetic shapes
 (not raster-derived) so results aren't sensitive to rasterization noise."""
-from shapely.geometry import Polygon
+from shapely.geometry import Point, Polygon
 
 from src.params.classify import classify_region
 from src.params.presets import get_preset
@@ -73,6 +73,25 @@ def test_winding_line_art_is_running_despite_wide_bounding_box():
     region = Region(polygon=ribbon, color_index=0, region_id="ribbon")
     c = classify_region(region, fabric)
     assert c.stitch_type == RUNNING
+
+
+def test_letter_bowl_with_hole_is_fill_not_running():
+    """Regression test for a real bug: a region with a hole (a letter
+    bowl like "e"/"o"/"d", at ordinary small-text proportions) has a
+    closed-loop medial axis that pixel-level rasterization jaggedness
+    can inflate -- spur pruning only cleans dead-end branches, not loop
+    waviness -- which was systematically *underestimating* the
+    true-width-via-skeleton-length line-art check (Multi-Region
+    Illustration Digitization's line-art detection) for exactly this
+    shape, misclassifying ordinary bowled letters as thin running-
+    stitch line art instead of a filled glyph. classify_region must
+    skip that check entirely for any region with a hole."""
+    fabric = get_preset("twill")
+    outer = Point(0, 0).buffer(3.2, quad_segs=32)
+    inner = Point(0, 0).buffer(1.9, quad_segs=32)  # ~1.3mm stroke width
+    bowl = Region(polygon=outer.difference(inner), color_index=0, region_id="bowl")
+    c = classify_region(bowl, fabric)
+    assert c.stitch_type == FILL
 
 
 def test_confidence_is_bounded_and_reason_is_set():

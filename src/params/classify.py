@@ -108,7 +108,20 @@ def classify_region(region: Region, fabric: FabricPreset) -> Classification:
             reason=f"average width {avg_width:.2f}mm is at or under the "
                    f"{RUNNING_MAX_WIDTH_MM}mm hairline threshold.")
 
-    if medial.total_skeleton_length_mm > 0:
+    # A region with a hole (a letter bowl like "e"/"o"/"d", a ring) has
+    # a *closed-loop* medial axis, not a tree of open branches -- spur
+    # pruning only removes short dead-end branches, so it can't clean up
+    # a loop that picked up pixel-level jaggedness from rasterization.
+    # That inflates total_skeleton_length_mm for a holed region without
+    # anything correcting for it, which systematically *underestimates*
+    # true_width below -- confirmed to misclassify ordinary bowled
+    # letters at normal text sizes as thin line art (e.g. "Hello World"
+    # digitizing every rounded letter as a scribbly running stitch
+    # instead of a filled glyph). The true-width check below is only
+    # valid for a simply-connected region's open skeleton, so holed
+    # regions skip it entirely and fall through to the bounding-
+    # rectangle-based test the same as any other blobby shape.
+    if not polygon.interiors and medial.total_skeleton_length_mm > 0:
         # area / total skeleton length (every branch, not just the one
         # walked path) is a topology-independent true average width --
         # unlike avg_width above (which comes from the bounding
