@@ -14,6 +14,7 @@ branching/non-rectangular shapes geometrically before the skeleton walk
 is ever used for anything but the (order-independent) PCA angle.
 """
 import math
+from collections import deque
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -112,9 +113,27 @@ def _prune_spurs(coords_px: list[tuple[int, int]], distance: np.ndarray,
 
 
 def _walk_skeleton(coords_px: list[tuple[int, int]]) -> list[int]:
-    """Greedy walk from an endpoint (degree-1 pixel) across 8-connected
-    skeleton neighbors. Good enough for the largely-unbranched skeletons
-    typical of a satin band or a single stroke."""
+    """Longest-path walk across 8-connected skeleton neighbors, via the
+    standard double-sweep BFS technique (BFS from any pixel to find the
+    farthest pixel U, then BFS from U to find the farthest pixel V --
+    the U-to-V shortest path is the graph's longest simple path for a
+    tree, and it's what we want here).
+
+    A single greedy "walk forward, never backtrack" pass (this
+    function's original approach) is not safe even starting from a
+    real endpoint: a rasterized skeleton at RASTER_RES_MM's resolution
+    is not always the clean open tree the module docstring assumes.
+    Confirmed on a real bold-sans-serif "l" satin column: pruning left
+    a long ~40-pixel spine with a tiny leftover 3-pixel *loop* at each
+    tip (a real skimage medial_axis artifact at this resolution, not a
+    shape property) -- every pixel in the graph then has degree >= 2,
+    so there's no true degree-1 endpoint to start from at all, and a
+    greedy walk from any pixel can wander around one tiny end-loop and
+    dead-end after 2-3 points, never reaching the real spine, entirely
+    depending on which neighbor happens to be tried first. BFS doesn't
+    have that failure mode: it explores every direction at once, so it
+    can't get trapped by one bad first choice.
+    """
     coord_set = set(coords_px)
     index_of = {c: i for i, c in enumerate(coords_px)}
     neighbors: dict[tuple[int, int], list[tuple[int, int]]] = {}
@@ -124,21 +143,29 @@ def _walk_skeleton(coords_px: list[tuple[int, int]]) -> list[int]:
              if (dx, dy) != (0, 0) and (x + dx, y + dy) in coord_set]
         neighbors[(x, y)] = n
 
-    degree = {c: len(n) for c, n in neighbors.items()}
-    endpoints = [c for c, d in degree.items() if d == 1]
-    start = endpoints[0] if endpoints else coords_px[0]
+    def farthest_via_bfs(start: tuple[int, int]
+                          ) -> tuple[tuple[int, int], dict]:
+        parent = {start: None}
+        queue = deque([start])
+        farthest = start
+        while queue:
+            cur = queue.popleft()
+            farthest = cur
+            for n in neighbors[cur]:
+                if n not in parent:
+                    parent[n] = cur
+                    queue.append(n)
+        return farthest, parent
 
-    visited = {start}
-    path = [start]
-    cur = start
-    while True:
-        nxts = [n for n in neighbors[cur] if n not in visited]
-        if not nxts:
-            break
-        nxt = nxts[0]
-        visited.add(nxt)
-        path.append(nxt)
-        cur = nxt
+    u, _ = farthest_via_bfs(coords_px[0])
+    v, parent = farthest_via_bfs(u)
+
+    path = [v]
+    cur = v
+    while parent[cur] is not None:
+        cur = parent[cur]
+        path.append(cur)
+    path.reverse()
     return [index_of[c] for c in path]
 
 
