@@ -39,18 +39,24 @@ def load_scaled_region_set(input_path: str, force: bool,
     re-check, shared by a fresh digitize (digitize_image below) and a
     corrected rebuild (src/review/rebuild.py) so the two can never
     silently diverge in how they load the same input."""
-    region_set = load_and_extract_regions(input_path, strict=not force)
+    has_target_size = bool(target_width_mm or target_height_mm)
+    # Skip the check on the *source* image's native size when a target
+    # width/height is given -- that native size is frequently just a
+    # guess (missing DPI metadata falls back to an assumed 96, see
+    # src/io_/load.py), so rejecting on it before the requested resize
+    # ever runs would block a perfectly fine finished size for the
+    # wrong reason. The real check -- on the actual scaled geometry --
+    # always runs below regardless.
+    region_set = load_and_extract_regions(
+        input_path, strict=not force, check_min_size=not has_target_size)
     region_set, scale_warnings = scale_region_set(region_set, target_width_mm, target_height_mm)
     warnings: list[str] = list(region_set.warnings) + scale_warnings
 
-    if target_width_mm or target_height_mm:
-        # The pre-scale minimum-cap-height check (inside
-        # load_and_extract_regions) only guarantees the *source* was in
-        # scope -- shrinking it afterward via --width-mm/--height-mm can
-        # take otherwise-fine text below the stitchable minimum with
-        # nothing else re-checking it. Re-run the same check on the
-        # scaled geometry so a shrink-to-too-small still gets caught
-        # (or forced-past-with-a-warning, exactly like the original check).
+    if has_target_size:
+        # Re-run the same check on the scaled geometry so a shrink-to-
+        # too-small (or a source that was too small and the requested
+        # size doesn't actually fix it) still gets caught -- or
+        # forced-past-with-a-warning, exactly like the original check.
         heights_mm = [r.polygon.bounds[3] - r.polygon.bounds[1] for r in region_set.regions]
         apply_findings([check_min_feature_size(heights_mm)], warnings, strict=not force)
 

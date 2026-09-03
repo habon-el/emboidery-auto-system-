@@ -99,3 +99,39 @@ def test_shrinking_below_minimum_can_still_be_forced(tmp_path):
     result = digitize_image("testbench/inputs/text_sample.png", "twill",
                              str(tmp_path / "shrunk"), target_width_mm=5.0, force=True)
     assert any("forced past scope check" in w for w in result["warnings"])
+
+
+NEEDS_UPSCALE = "testbench/inputs/needs_upscale_dot.png"
+
+
+def test_too_small_source_is_rejected_with_no_target_size(tmp_path):
+    """Baseline: needs_upscale_dot.png's native size (~4mm) really is
+    under the 6mm minimum on its own, with no resize requested."""
+    with pytest.raises(DigitizeScopeError):
+        digitize_image(NEEDS_UPSCALE, "twill", str(tmp_path / "native"))
+
+
+def test_upscaling_a_too_small_source_is_not_rejected(tmp_path):
+    """Regression test for a real bug found from a user's actual too-
+    small upload: requesting a big enough --width-mm/target_width_mm
+    used to still get rejected, because the pre-scale minimum-cap-
+    height check (inside load_and_extract_regions) ran on the source
+    image's native size *before* the resize that would have fixed it
+    ever had a chance to run -- so a --width-mm big enough to produce a
+    perfectly fine finished size couldn't actually get used. The only
+    check that should matter is on the final, scaled geometry."""
+    result = digitize_image(NEEDS_UPSCALE, "twill", str(tmp_path / "upscaled"),
+                             target_width_mm=20.0)
+    # Reaching here at all (no DigitizeScopeError) is the regression
+    # check; also confirm no leftover warning about it.
+    assert not any("minimum cap height" in w for w in result["warnings"])
+    assert result["regions"][0]["stitch_type"] in ("fill", "satin")
+
+
+def test_upscaling_still_catches_a_target_size_that_is_still_too_small(tmp_path):
+    """The post-scale re-check must still fire when the *requested*
+    size is itself still too small -- upscaling isn't a blanket bypass
+    of the guardrail, only of checking the wrong (pre-resize) size."""
+    with pytest.raises(DigitizeScopeError):
+        digitize_image(NEEDS_UPSCALE, "twill", str(tmp_path / "still_small"),
+                        target_width_mm=5.0)

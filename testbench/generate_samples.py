@@ -125,6 +125,29 @@ def make_out_of_scope_smalltext():
     save(img, "out_of_scope_smalltext.png")
 
 
+def make_needs_upscale_dot():
+    """A small flat circle: native height under the 6mm minimum cap
+    height, but well over the ~2mm^2 noise floor so it survives
+    extraction rather than being dropped as noise. Exercises the
+    resize-vs-reject interaction (src/pipeline.py's
+    load_scaled_region_set): the *source* image's native size here is
+    too small on its own, but requesting a big enough --width-mm should
+    scale it past the minimum instead of being rejected on that native
+    size before the resize ever gets a chance to fix it -- a real bug
+    found from a user's actual too-small upload (a serif "Hello world!"
+    whose exclamation-mark dot was a disproportionately tiny native
+    detail) that used to reject regardless of any --width-mm given."""
+    diameter_mm = 4.0
+    pad = mm(4)
+    size = mm(diameter_mm) + 2 * pad
+    img = Image.new("RGB", (size, size), "white")
+    draw = ImageDraw.Draw(img)
+    r = mm(diameter_mm) // 2
+    c = size // 2
+    draw.ellipse([c - r, c - r, c + r, c + r], fill=(20, 90, 170))
+    save(img, "needs_upscale_dot.png")
+
+
 def make_illustration_badge():
     """Multi-region illustration fixture (Multi-Region Illustration
     Digitization milestone): a layered badge with a true hole (the
@@ -217,6 +240,7 @@ def main():
     make_text_sample()
     make_text_with_bowls()
     make_out_of_scope_smalltext()
+    make_needs_upscale_dot()
     make_logo_svg()
     make_illustration_badge()
 

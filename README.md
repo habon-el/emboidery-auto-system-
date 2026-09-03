@@ -136,6 +136,39 @@ pattern every other per-region correction already uses. See
 `src/stitches/fill.py` for what each style actually generates and
 `src/stitches/model.py`'s `FILL_STYLES`.
 
+### Text & sizing tips
+
+Two real, user-reported issues worth knowing about when digitizing text:
+
+- **Set a "Finished size" instead of relying on the source image's own
+  size.** A PNG/JPG without real DPI metadata (most screenshots and web
+  exports) falls back to an assumed 96 DPI (`src/io_/load.py`) — which
+  can make the tool measure a design as much smaller than you actually
+  intend. If you hit a "minimum cap height" rejection on an image that
+  looks normal-sized to you, this is almost always why: give an
+  explicit `--width-mm`/`--height-mm` (CLI) or "Finished size" (web UI)
+  for the actual physical size you want, rather than trial-and-error
+  guessing at the source size. This now works correctly even from a
+  too-small source (see below) — it didn't always.
+- **Use a bold, simple sans-serif font for small text, not a thin serif
+  one.** A regular-weight serif font's strokes (verticals in "H"/"l",
+  hairline serifs) are thin *by design* — thin enough that at any
+  practical embroidered-text size they fall under the 1.2mm hairline
+  threshold and get digitized as a scribbly running stitch instead of a
+  clean satin/fill column, which is what makes some letters in a design
+  come out looking "off" or inconsistent next to others. This isn't a
+  bug to fix in software -- it's the same reason real digitizers avoid
+  thin/serif fonts for small embroidered text. A bold sans-serif (the
+  same family this project's own test fixtures use) keeps every
+  stroke thick enough to stitch cleanly at normal sizes.
+
+A related bug is fixed: requesting a big-enough `--width-mm`/`--height-mm`
+to upscale a too-small source past the 6mm minimum used to still get
+rejected, because the rejection check ran on the *source* image's native
+(often DPI-guessed) size before the resize that would have fixed it ever
+ran (`src/pipeline.py`'s `load_scaled_region_set`). The check now
+correctly runs on the size that actually matters — after scaling.
+
 ### Manual region review
 
 A real correction workflow, not just a read-only report: every
