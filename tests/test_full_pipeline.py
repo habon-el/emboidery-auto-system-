@@ -19,8 +19,11 @@ EXPECTED = {
     "circle_2color.png": (400, 1200, 1),
     "bar_satin.png": (350, 1200, 1),
     "star_3color.png": (250, 900, 2),
-    "text_sample.png": (70, 500, 1),
-    "text_with_bowls.png": (600, 1300, 1),
+    # Text comes out as satin columns now, not tatami fill (see
+    # src/params/classify.py's curved-stroke detection). Satin is denser
+    # than fill, so both text fixtures land higher than they used to.
+    "text_sample.png": (250, 800, 1),
+    "text_with_bowls.png": (1100, 2200, 1),
     "logo.svg": (700, 2000, 2),
 }
 

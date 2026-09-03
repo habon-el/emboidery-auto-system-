@@ -33,6 +33,20 @@ RASTER_RES_MM = 0.3
 # base width and survives.
 SPUR_SIGNIFICANCE_FACTOR = 1.2
 
+# A branch shorter than this multiple of its own width is the fragment
+# where several strokes meet, not a stroke in its own right (a bold "H"
+# splits into 5 real branches plus 5 stubs 0.3mm long and 3.2mm wide).
+# Offsetting rails +/-1.6mm either side of a 0.3mm path spins the
+# perpendicular right round and sews a spiky starburst at every
+# junction, so these are dropped -- the real branches meeting there
+# already cover that fabric.
+MIN_BRANCH_LENGTH_OVER_WIDTH = 1.0
+
+# A loop-like skeleton (no loose ends) is accepted as a closed ring when
+# a single walk round it reaches at least this much of the skeleton.
+LOOP_COVERAGE_MIN = 0.85
+
+
 
 def _rasterize(polygon: Polygon, res_mm: float
                 ) -> tuple[np.ndarray, tuple[float, float]]:
@@ -112,6 +126,94 @@ def _prune_spurs(coords_px: list[tuple[int, int]], distance: np.ndarray,
     return [c for c in coords_px if c in coord_set]
 
 
+def _build_neighbors(coords_px: list[tuple[int, int]]) -> dict:
+    coord_set = set(coords_px)
+    return {(x, y): [(x + dx, y + dy)
+                     for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                     if (dx, dy) != (0, 0) and (x + dx, y + dy) in coord_set]
+            for (x, y) in coords_px}
+
+
+def _neighbor_components(coord_set: set, c: tuple[int, int]) -> int:
+    """How many *distinct directions* the skeleton leaves this pixel in:
+    the number of 8-connected components among its present neighbours.
+
+    Counting raw neighbours instead badly over-reports junctions. A
+    skeleton line running diagonally is a staircase, and a staircase
+    pixel legitimately touches three others that are all part of the
+    same single line -- on a plain rotated satin bar that read as 86
+    "branches" where there is really one stroke, and all but one got
+    dropped, leaving most of the bar unstitched. Grouping mutually
+    adjacent neighbours into one direction is the standard fix (the
+    connectivity number): a straight run scores 2 wherever it goes,
+    an endpoint 1, a real junction 3+.
+    """
+    x, y = c
+    present = [(x + dx, y + dy)
+               for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+               if (dx, dy) != (0, 0) and (x + dx, y + dy) in coord_set]
+    unassigned = set(present)
+    components = 0
+    while unassigned:
+        stack = [unassigned.pop()]
+        components += 1
+        while stack:
+            cur = stack.pop()
+            for other in list(unassigned):
+                if max(abs(cur[0] - other[0]), abs(cur[1] - other[1])) <= 1:
+                    unassigned.discard(other)
+                    stack.append(other)
+    return components
+
+
+def _split_into_branches(coords_px: list[tuple[int, int]]
+                          ) -> list[list[tuple[int, int]]]:
+    """Cut the skeleton into its individual strokes: maximal runs of
+    pixels between one junction/endpoint and the next.
+
+    Line art is not a set of tidy separate strokes -- on a real cartoon
+    face every black outline touches its neighbours, so the whole black
+    colour layer extracts as ONE connected branching network (head
+    outline into the ears, into the hairline, into the eyebrows). A
+    single satin column can only trace one path through that, which on
+    the real fixture covered just 33% of the skeleton and would have
+    left the other 67% unstitched. Splitting at the junctions gives one
+    clean stroke per branch, each of which can carry its own satin
+    column, so the whole network gets stitched.
+    """
+    neighbors = _build_neighbors(coords_px)
+    coord_set = set(coords_px)
+    # Direction count, not raw neighbour count -- see _neighbor_components.
+    degree = {c: _neighbor_components(coord_set, c) for c in coords_px}
+    nodes = [c for c in coords_px if degree[c] != 2]   # junctions + endpoints
+
+    branches: list[list[tuple[int, int]]] = []
+    used_edges: set[frozenset] = set()
+
+    for node in nodes:
+        for first in neighbors[node]:
+            edge = frozenset((node, first))
+            if edge in used_edges:
+                continue
+            branch = [node, first]
+            used_edges.add(edge)
+            prev, cur = node, first
+            while degree[cur] == 2:
+                nxt = next((n for n in neighbors[cur] if n != prev), None)
+                if nxt is None or frozenset((cur, nxt)) in used_edges:
+                    break
+                used_edges.add(frozenset((cur, nxt)))
+                branch.append(nxt)
+                prev, cur = cur, nxt
+            if len(branch) >= 2:
+                branches.append(branch)
+
+    if not branches and coords_px:
+        # No junctions and no endpoints at all: a pure closed ring.
+        branches.append([coords_px[i] for i in _walk_skeleton(coords_px)])
+    return branches
+
+
 def _walk_skeleton(coords_px: list[tuple[int, int]]) -> list[int]:
     """Longest-path walk across 8-connected skeleton neighbors, via the
     standard double-sweep BFS technique (BFS from any pixel to find the
@@ -157,6 +259,35 @@ def _walk_skeleton(coords_px: list[tuple[int, int]]) -> list[int]:
                     queue.append(n)
         return farthest, parent
 
+    # A skeleton with no endpoints at all and every pixel of degree 2 is
+    # a closed ring -- the medial axis of an outline stroke that loops
+    # back on itself (a head outline, a letter "o", a badge border).
+    # BFS between two points on a ring returns the *shorter way round*,
+    # i.e. half the loop, which would satin only half an outline; walk
+    # the whole cycle instead.
+    coord_set = set(coords_px)
+    degree = {c: _neighbor_components(coord_set, c) for c in coords_px}
+    if not any(d <= 1 for d in degree.values()):
+        # No loose ends anywhere: the skeleton closes on itself. Demanding
+        # every pixel be exactly degree 2 was too strict -- a couple of
+        # rasterization junctions anywhere on the ring failed the test,
+        # BFS then returned the shorter way round (exactly half), and a
+        # letter "o" came out stitched as a "c". Walk it greedily instead
+        # and accept it as a ring if the walk gets most of the way round.
+        start = coords_px[0]
+        cycle = [start]
+        visited = {start}
+        cur, prev = start, None
+        while True:
+            nxts = [n for n in neighbors[cur] if n != prev and n not in visited]
+            if not nxts:
+                break
+            prev, cur = cur, nxts[0]
+            visited.add(cur)
+            cycle.append(cur)
+        if len(cycle) >= LOOP_COVERAGE_MIN * len(coords_px):
+            return [index_of[c] for c in cycle]
+
     u, _ = farthest_via_bfs(coords_px[0])
     v, parent = farthest_via_bfs(u)
 
@@ -169,11 +300,53 @@ def _walk_skeleton(coords_px: list[tuple[int, int]]) -> list[int]:
     return [index_of[c] for c in path]
 
 
+def _offset_rails(pts: list[Point], widths_mm: list[float], closed: bool
+                   ) -> tuple[list[Point], list[Point]]:
+    """Offset a centerline into two satin rails, perpendicular to the
+    local tangent by the local half-width. A closed ring wraps its
+    tangents at the seam so the column doesn't flare where it meets."""
+    rail_a: list[Point] = []
+    rail_b: list[Point] = []
+    n = len(pts)
+    for i in range(n):
+        if closed:
+            prev_i, next_i = (i - 1) % n, (i + 1) % n
+        else:
+            prev_i, next_i = max(0, i - 1), min(n - 1, i + 1)
+        tx = pts[next_i][0] - pts[prev_i][0]
+        ty = pts[next_i][1] - pts[prev_i][1]
+        tlen = math.hypot(tx, ty) or 1.0
+        nx, ny = -ty / tlen, tx / tlen
+        half_w = widths_mm[i] / 2
+        x, y = pts[i]
+        rail_a.append((x + nx * half_w, y + ny * half_w))
+        rail_b.append((x - nx * half_w, y - ny * half_w))
+    return rail_a, rail_b
+
+
 class MedialAxisResult:
     def __init__(self, path_points_mm: list[Point], widths_mm: list[float],
-                 total_skeleton_length_mm: float = 0.0):
+                 total_skeleton_length_mm: float = 0.0,
+                 is_closed_loop: bool = False,
+                 branches: list[tuple[list, list]] | None = None,
+                 skeleton_px: int = 0):
         self.path_points_mm = path_points_mm
         self.widths_mm = widths_mm
+        # True when the walked path is a closed ring (an outline stroke
+        # that loops back on itself). rails() wraps its tangents so the
+        # satin column closes cleanly instead of flaring at the seam.
+        self.is_closed_loop = is_closed_loop
+        # Every stroke in the skeleton as (points_mm, widths_mm) -- one
+        # entry for a simple stroke, several when the strokes form a
+        # connected network (see _split_into_branches). Satin uses these
+        # so a branching outline gets a column per branch instead of one
+        # column covering a fraction of it.
+        self.branches = branches or []
+        # Pixel count of the whole pruned skeleton, so coverage can be
+        # compared against len(path_points_mm) directly. (Comparing
+        # *lengths* doesn't work: a diagonal step measures 0.42mm while
+        # contributing one 0.3mm pixel, so a ring reads as 119% covered.)
+        self.skeleton_px = skeleton_px
         # Length of the FULL pruned skeleton (every branch, before the
         # single greedy walk picks one path through it) -- unlike
         # length_mm below, this stays meaningful for a branching shape
@@ -194,6 +367,32 @@ class MedialAxisResult:
         return sum(self.widths_mm) / len(self.widths_mm) if self.widths_mm else 0.0
 
     @property
+    def path_coverage(self) -> float:
+        """Fraction of the skeleton the single walked centerline
+        explains. ~1 for a simple stroke (one satin column covers it);
+        well below 1 for a branching network, where one column would
+        leave the rest unstitched."""
+        if self.skeleton_px <= 0:
+            return 1.0
+        return min(1.0, len(self.path_points_mm) / self.skeleton_px)
+
+    @property
+    def width_variation(self) -> float:
+        """Coefficient of variation of the width along the centerline.
+        Near 0 for a real stroke (an outline, an eyebrow, a satin band
+        keep a near-constant width down their length); large for a blob,
+        whose medial axis runs from a fat middle out to thin tips. This
+        is what distinguishes a *curved stroke* from a blob without
+        appealing to the bounding rectangle, which any curve fails."""
+        if len(self.widths_mm) < 2:
+            return 0.0
+        mean = self.avg_width_mm
+        if mean <= 0:
+            return 0.0
+        var = sum((w - mean) ** 2 for w in self.widths_mm) / len(self.widths_mm)
+        return math.sqrt(var) / mean
+
+    @property
     def max_width_mm(self) -> float:
         return float(np.percentile(self.widths_mm, 90)) if self.widths_mm else 0.0
 
@@ -208,26 +407,82 @@ class MedialAxisResult:
         dx, dy = vt[0]
         return math.degrees(math.atan2(dy, dx))
 
+    def stitchable_coverage(self) -> float:
+        """Fraction of the skeleton the satin columns we would actually
+        emit (branch_rails) manage to cover. Satin is only the right
+        answer when it covers the whole stroke: a shape we can only
+        partly column is better off filled, which covers everything by
+        construction. Without this gate a letter "o" -- a ring whose
+        skeleton splits into arcs we can't fully reassemble -- came out
+        stitched as a "c"."""
+        if self.skeleton_px <= 0:
+            return 1.0
+        covered = sum(len(rail_a) for rail_a, _ in self.branch_rails())
+        return min(1.0, covered / self.skeleton_px)
+
+    def branch_aspects(self) -> list[float]:
+        """length / width for each stroke, junction stubs excluded. A
+        satin column should be meaningfully longer than it is wide;
+        judging that per branch rather than on the summed skeleton is
+        what separates a real stroke network (a cartoon's outlines, a
+        letter's stems) from a stubby branching blob like a thick plus
+        sign, whose short arms would otherwise add up to a stroke-like
+        total while each one is as wide as it is long."""
+        out = []
+        for points, widths in self.branches:
+            if len(points) < 2 or not widths:
+                continue
+            length = sum(math.hypot(b[0] - a[0], b[1] - a[1])
+                         for a, b in zip(points, points[1:]))
+            avg_w = sum(widths) / len(widths)
+            if avg_w <= 0:
+                continue
+            aspect = length / avg_w
+            if aspect >= MIN_BRANCH_LENGTH_OVER_WIDTH:
+                out.append(aspect)
+        return out
+
+    def branch_rails(self) -> list[tuple[list[Point], list[Point]]]:
+        """One satin rail pair per stroke in the skeleton. For a simple
+        stroke that's a single pair identical to rails(); for a
+        branching outline network it's one pair per branch, so the whole
+        network gets stitched rather than just the one path a single
+        column could trace."""
+        # Whichever actually covers more of the skeleton wins, rather
+        # than a threshold guess. Both options genuinely lose coverage
+        # in different cases: a single column can only trace one path
+        # through a branching outline network (33% of a real cartoon's
+        # black layer), while branch splitting fragments a plain
+        # rasterized stroke into dozens of stubs that individually get
+        # dropped (a rotated satin bar decomposed into 78 pieces, and
+        # keeping only the few valid ones left most of the bar bare).
+        # Comparing the two directly is what keeps both cases whole.
+        kept = []
+        covered_px = 0
+        for points, widths in self.branches:
+            if len(points) < 2 or not widths:
+                continue
+            length = sum(math.hypot(b[0] - a[0], b[1] - a[1])
+                         for a, b in zip(points, points[1:]))
+            avg_w = sum(widths) / len(widths)
+            if avg_w > 0 and length / avg_w < MIN_BRANCH_LENGTH_OVER_WIDTH:
+                continue                      # a junction stub, not a stroke
+            rail_a, rail_b = _offset_rails(points, widths, closed=False)
+            if len(rail_a) >= 2:
+                kept.append((rail_a, rail_b))
+                covered_px += len(points)
+
+        if not kept or covered_px <= len(self.path_points_mm):
+            return [self.rails()]
+        return kept
+
     def rails(self) -> tuple[list[Point], list[Point]]:
         """Synthetic satin rails offset perpendicular to the skeleton by
         the local half-width. Approximates the true region boundary
         without needing to trace/split it -- a known MVP simplification
         (see module docstring)."""
-        pts = self.path_points_mm
-        rail_a: list[Point] = []
-        rail_b: list[Point] = []
-        n = len(pts)
-        for i in range(n):
-            prev_i, next_i = max(0, i - 1), min(n - 1, i + 1)
-            tx = pts[next_i][0] - pts[prev_i][0]
-            ty = pts[next_i][1] - pts[prev_i][1]
-            tlen = math.hypot(tx, ty) or 1.0
-            nx, ny = -ty / tlen, tx / tlen
-            half_w = self.widths_mm[i] / 2
-            x, y = pts[i]
-            rail_a.append((x + nx * half_w, y + ny * half_w))
-            rail_b.append((x - nx * half_w, y - ny * half_w))
-        return rail_a, rail_b
+        return _offset_rails(self.path_points_mm, self.widths_mm,
+                              closed=self.is_closed_loop)
 
 
 MEDIAL_AXIS_RNG_SEED = 1729
@@ -260,7 +515,17 @@ def compute_medial_axis(polygon: Polygon, res_mm: float = RASTER_RES_MM
 
     order = _walk_skeleton(coords_px)
     ordered_coords = [coords_px[i] for i in order]
+    # The walk covered every skeleton pixel and came back to where it
+    # started -- a closed ring, not an open stroke with two ends.
+    is_closed_loop = (len(order) == len(coords_px) > 2
+                      and max(abs(ordered_coords[0][0] - ordered_coords[-1][0]),
+                              abs(ordered_coords[0][1] - ordered_coords[-1][1])) <= 1)
 
-    path_points_mm = [(ox + x * res_mm, oy + y * res_mm) for x, y in ordered_coords]
-    widths_mm = [distance[y, x] * 2 * res_mm for x, y in ordered_coords]
-    return MedialAxisResult(path_points_mm, widths_mm, total_skeleton_length_mm)
+    def to_mm(coords):
+        return ([(ox + x * res_mm, oy + y * res_mm) for x, y in coords],
+                [distance[y, x] * 2 * res_mm for x, y in coords])
+
+    path_points_mm, widths_mm = to_mm(ordered_coords)
+    branches = [to_mm(b) for b in _split_into_branches(coords_px)]
+    return MedialAxisResult(path_points_mm, widths_mm, total_skeleton_length_mm,
+                             is_closed_loop, branches, len(coords_px))

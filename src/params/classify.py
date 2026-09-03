@@ -18,6 +18,7 @@ set, which doesn't depend on walk order) and for deriving satin rails
 (only reached for shapes this test already confirmed are simple bands).
 """
 import math
+import statistics
 from dataclasses import dataclass
 
 from src.params.presets import FabricPreset
@@ -39,6 +40,70 @@ SATIN_MIN_ELONGATION = 3.0
 # (a star, a letter with a crossbar) is well below this even when its
 # bounding rectangle happens to be elongated.
 SATIN_MIN_RECTANGULARITY = 0.55
+
+# --- curved stroke ("satin outline") detection -------------------------
+#
+# The rectangularity test above only ever passes for a *straight* band:
+# a curved stroke fills almost none of its own bounding rectangle. On a
+# real cartoon line-art face every black outline -- the head oval, the
+# eyebrows, the smile, the hair strands -- measured elongation 14x to
+# 30x with rectangularity 0.04-0.30, so all of them fell through to
+# fill and came out as mushy blobs instead of crisp lines. Outlining a
+# curve with a satin column is *the* fundamental line-art digitizing
+# technique, so it needs a test that doesn't go through the bounding box.
+#
+# A stroke is recognised from its own medial axis instead:
+#   * it is long relative to its width (aspect, measured along the
+#     centerline rather than across a bounding rectangle), and
+#   * its width stays near-constant down that length (a blob's medial
+#     axis runs from a fat middle out to thin tips), and
+#   * the walked centerline explains essentially the whole skeleton.
+#
+# That last one is what keeps a *branching* shape out (a star, a letter
+# "H"): a single satin column can only trace one branch, so anything
+# whose skeleton the walk doesn't account for must stay fill -- which is
+# the same guarantee the rectangularity test used to provide, kept
+# explicitly instead of as a side effect.
+# Each satin column must be at least this much longer than it is wide.
+# Measured per branch, not on the summed skeleton: a thick plus sign's
+# four arms are each as wide as they are long (aspect ~1) but sum to a
+# stroke-like total, and satining them would sew 8mm columns 8mm long.
+# A letter's stems come out around 2.2-2.8 and a line-art outline far
+# higher, so this keeps both while excluding the stubby case.
+STROKE_MIN_ASPECT = 2.0
+
+# Curved-stroke detection is for *line art* -- outlines, letter stems,
+# detail strokes -- which are thin. A wide curved band (a badge's 10mm
+# ring) is a different animal: rails derived from a medial axis are only
+# an approximation of the true boundary, and at that width the
+# approximation shows as a visibly ragged, flaring edge where a plain
+# fill was clean. Wide bands therefore keep the old behaviour. The
+# fabric preset's satin_max_width_mm still applies on top of this; this
+# is the narrower limit for the *curved* path specifically.
+STROKE_MAX_WIDTH_MM = 5.0
+STROKE_MAX_WIDTH_VARIATION = 0.40
+# polygon area over (total skeleton length x average width): ~1 when the
+# skeleton really does explain the shape as a constant-width stroke
+# network. This is what keeps a *tapering* branching shape out -- a
+# star's arms or a square's diagonals run from a fat middle to zero-width
+# tips, so their area and their skeleton disagree badly -- while letting
+# a genuine outline network through, where every branch is the same
+# width as every other. Junction pixels get counted by more than one
+# branch, so a network measures a little under 1.
+STROKE_AREA_RATIO_RANGE = (0.55, 1.7)
+
+# Satin is only chosen when the columns we would emit actually cover the
+# stroke. A shape we can column only partly is better off filled, which
+# covers everything by construction -- this is what stops a letter "o"
+# (a ring whose skeleton we can't always reassemble into one loop, and
+# which measures ~65% covered) from being stitched as a "c".
+#
+# Not higher, because the measure under-counts by a few percent at every
+# junction by construction: the stub where strokes meet is dropped as a
+# column of its own, so its pixels score as uncovered even though the
+# columns either side of it stitch that fabric. Two crossing strokes
+# measure 85% for that reason alone.
+STROKE_MIN_STITCHABLE_COVERAGE = 0.75
 
 DEFAULT_FILL_ANGLE_DEG = 45.0
 # Below this skeleton length the medial axis is too short/noisy to trust
@@ -142,6 +207,45 @@ def classify_region(region: Region, fabric: FabricPreset) -> Classification:
                        f"skeleton length, not just its bounding rectangle) is "
                        f"at or under the {RUNNING_MAX_WIDTH_MM}mm hairline "
                        f"threshold -- reads as a thin winding stroke.")
+
+    # A curved stroke: caught here, before the bounding-rectangle tests
+    # below, which any curve fails by construction.
+    # Measured over the WHOLE skeleton, not just the one walked path:
+    # every branch gets its own satin column (medial.branch_rails), so
+    # nothing is left unstitched and the question is only whether the
+    # shape really is a constant-width stroke network.
+    # Judge the proportions of whatever will actually be stitched: one
+    # column for a simple stroke, or the branches for a network (the
+    # same choice branch_rails() makes, for the same coverage reason).
+    single_aspect = (medial.length_mm / medial.avg_width_mm
+                     if medial.avg_width_mm > 0 else 0.0)
+    aspects = medial.branch_aspects()
+    branch_aspect = statistics.median(aspects) if aspects else 0.0
+    stroke_aspect = max(single_aspect, branch_aspect) if aspects else single_aspect
+    explained_area = medial.total_skeleton_length_mm * medial.avg_width_mm
+    area_ratio = polygon.area / explained_area if explained_area > 0 else 0.0
+    lo, hi = STROKE_AREA_RATIO_RANGE
+    is_stroke = (stroke_aspect >= STROKE_MIN_ASPECT
+                 and medial.width_variation <= STROKE_MAX_WIDTH_VARIATION
+                 and lo <= area_ratio <= hi
+                 and medial.stitchable_coverage() >= STROKE_MIN_STITCHABLE_COVERAGE)
+    if (is_stroke and medial.max_width_mm <= STROKE_MAX_WIDTH_MM
+            and medial.max_width_mm <= fabric.satin_max_width_mm):
+        confidence = _clamp01(min(
+            (stroke_aspect - STROKE_MIN_ASPECT) / STROKE_MIN_ASPECT,
+            (STROKE_MAX_WIDTH_VARIATION - medial.width_variation) / STROKE_MAX_WIDTH_VARIATION))
+        n_branches = len(medial.branches)
+        shape = ("closed outline ring" if medial.is_closed_loop
+                 else f"outline network of {n_branches} strokes" if n_branches > 1
+                 else "curved stroke")
+        return Classification(
+            SATIN, medial, medial.angle_deg(), avg_width_mm=medial.avg_width_mm,
+            confidence=confidence,
+            reason=f"reads as a {shape}: {stroke_aspect:.0f}x longer than it is "
+                   f"wide along its own centerline, width varies only "
+                   f"{medial.width_variation * 100:.0f}% down that length, and its "
+                   f"area matches that centerline x width to within "
+                   f"{abs(1 - area_ratio) * 100:.0f}% -- satin along the curve.")
 
     elongation = long_side / avg_width if avg_width > 0 else 0.0
     rectangularity = polygon.area / (long_side * short_side) if long_side * short_side > 0 else 0.0

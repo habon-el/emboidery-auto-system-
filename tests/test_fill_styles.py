@@ -202,7 +202,11 @@ def test_uniform_fill_angle_gives_every_filled_region_the_same_direction(tmp_pat
     thread is directional, so each caught the light differently and the
     word read as mismatched letters instead of one piece of lettering.
     See src/stitches/model.py's UNIFORM_FILL_ANGLE_DEG."""
-    result = digitize_image(os.path.join(INPUTS, "text_with_bowls.png"), "twill",
+    # A badge illustration rather than text: since curved-stroke
+    # detection landed, letters are satin columns (which take their
+    # direction from their rails, not from this angle), so a text
+    # fixture no longer exercises fill direction at all.
+    result = digitize_image(os.path.join(INPUTS, "illustration_badge.png"), "twill",
                              str(tmp_path / "uniform"), fill_angle_deg=30.0)
     fill_angles = {r["angle_deg"] for r in result["regions"] if r["stitch_type"] == FILL}
     assert fill_angles, "fixture must have filled regions to be meaningful"
@@ -218,14 +222,14 @@ def test_per_shape_angles_still_available_and_actually_differ(tmp_path):
     from src.params.presets import get_preset
     from src.regions.pipeline import load_and_extract_regions
 
-    region_set = load_and_extract_regions(os.path.join(INPUTS, "text_with_bowls.png"))
+    region_set = load_and_extract_regions(os.path.join(INPUTS, "illustration_badge.png"))
     fabric = get_preset("twill")
     angles = {round(classify_region(r, fabric).angle_deg, 1)
               for r in region_set.regions
               if classify_region(r, fabric).stitch_type == FILL}
-    assert len(angles) > 1, "per-shape angles should differ across letters"
+    assert len(angles) > 1, "per-shape angles should differ across regions"
 
-    result = digitize_image(os.path.join(INPUTS, "text_with_bowls.png"), "twill",
+    result = digitize_image(os.path.join(INPUTS, "illustration_badge.png"), "twill",
                              str(tmp_path / "per_shape"), fill_angle_deg=None)
     assert result["summary"]["filled_regions"] > 0
 

@@ -120,3 +120,70 @@ def test_angle_follows_long_axis_not_bounding_box():
     angle_mod_180 = c.angle_deg % 180
     diff = min(abs(angle_mod_180 - 30), abs(angle_mod_180 - 30 - 180))
     assert diff < 8.0
+
+
+# -- curved satin outlines ------------------------------------------------
+
+def _ring(r_outer, r_inner):
+    return (Point(0, 0).buffer(r_outer, quad_segs=64)
+            .difference(Point(0, 0).buffer(r_inner, quad_segs=64)))
+
+
+def test_curved_outline_ring_is_satin_not_fill():
+    """The headline case for line art: a curved constant-width stroke.
+    The rectangularity test can only ever pass for a *straight* band --
+    a curve fills almost none of its own bounding rectangle -- so every
+    outline on a real cartoon face (head oval, eyebrows, smile, hair
+    strands, measured at elongation 14x-30x with rectangularity
+    0.04-0.30) fell through to fill and came out as a mushy blob
+    instead of a crisp line. Outlining a curve with satin is *the*
+    line-art digitizing technique."""
+    fabric = get_preset("twill")
+    region = Region(polygon=_ring(20.0, 18.5), color_index=0, region_id="outline")
+    c = classify_region(region, fabric)
+    assert c.stitch_type == SATIN
+    assert "curve" in c.reason
+
+
+def test_branching_outline_network_gets_a_column_per_stroke():
+    """Line art doesn't extract as tidy separate strokes: every outline
+    touches its neighbours, so a whole black layer comes out as ONE
+    connected branching region. A single satin column can only trace
+    one path through that (33% of the skeleton on the real fixture),
+    so the strokes are split at their junctions and each gets its own
+    column."""
+    fabric = get_preset("twill")
+    # Two strokes crossing: thin, constant width, clearly not a blob.
+    bar_h = Polygon([(0, 9), (40, 9), (40, 11), (0, 11)])
+    bar_v = Polygon([(19, 0), (21, 0), (21, 20), (19, 20)])
+    region = Region(polygon=bar_h.union(bar_v), color_index=0, region_id="cross")
+    c = classify_region(region, fabric)
+    assert c.stitch_type == SATIN
+    assert len(c.medial.branch_rails()) >= 2, "each stroke needs its own column"
+
+
+def test_satin_is_only_chosen_when_it_covers_the_whole_stroke():
+    """Satin that covers only part of a shape is worse than filling it:
+    a letter "o" whose ring skeleton couldn't be reassembled into one
+    loop came out stitched as a "c". Anything the columns can't fully
+    cover must fall back to fill, which covers everything by
+    construction."""
+    fabric = get_preset("twill")
+    for poly, name in ((_ring(20.0, 18.5), "outline ring"),
+                        (Polygon([(0, 0), (40, 0), (40, 4), (0, 4)]), "straight band")):
+        c = classify_region(Region(polygon=poly, color_index=0, region_id=name), fabric)
+        if c.stitch_type == SATIN:
+            assert c.medial.stitchable_coverage() >= 0.85, (
+                f"{name}: satin chosen but only covers "
+                f"{c.medial.stitchable_coverage():.0%} of the stroke")
+
+
+def test_stubby_branching_shapes_still_fill():
+    """The guard the rectangularity test used to provide, kept
+    explicitly: a shape whose branches are as wide as they are long is
+    not a stroke network, however much its total skeleton adds up."""
+    fabric = get_preset("twill")
+    plus = Polygon([(8, 0), (16, 0), (16, 8), (24, 8), (24, 16), (16, 16),
+                    (16, 24), (8, 24), (8, 16), (0, 16), (0, 8), (8, 8)])
+    c = classify_region(Region(polygon=plus, color_index=0, region_id="plus"), fabric)
+    assert c.stitch_type == FILL

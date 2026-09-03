@@ -36,15 +36,22 @@ def build_blocks_for_region(region: Region, classification: Classification,
         return [StitchBlock(RUNNING, pts, color, eid)]
 
     if classification.stitch_type == SATIN:
-        rail_a, rail_b = medial.rails()
+        # One column per stroke: a simple band is a single pair of
+        # rails, a branching outline network (a cartoon's black line art,
+        # where every outline touches its neighbours and the whole layer
+        # extracts as one connected region) is one pair per branch, so
+        # the entire network gets stitched instead of only the one path
+        # a single column could trace -- see src/regions/medial.py's
+        # _split_into_branches.
         blocks = []
-        if include_underlay and fabric.satin_underlay:
-            underlay_pts = satin_centerline_underlay(
-                rail_a, rail_b, fabric.running_stitch_length_mm)
-            blocks.append(StitchBlock(UNDERLAY_SATIN, underlay_pts, color, eid))
-        satin_pts = generate_satin(
-            rail_a, rail_b, fabric.satin_density_mm, fabric.pull_compensation_mm)
-        blocks.append(StitchBlock(SATIN, satin_pts, color, eid))
+        for rail_a, rail_b in medial.branch_rails():
+            if include_underlay and fabric.satin_underlay:
+                underlay_pts = satin_centerline_underlay(
+                    rail_a, rail_b, fabric.running_stitch_length_mm)
+                blocks.append(StitchBlock(UNDERLAY_SATIN, underlay_pts, color, eid))
+            satin_pts = generate_satin(
+                rail_a, rail_b, fabric.satin_density_mm, fabric.pull_compensation_mm)
+            blocks.append(StitchBlock(SATIN, satin_pts, color, eid))
         # Satin columns already have a well-defined, dense edge -- a
         # border ring only applies to fill regions (a badge's outer
         # shape, a blob of color), where it visibly adds definition.

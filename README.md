@@ -225,6 +225,47 @@ is geometrically ambiguous, and without that nudge shapely flips
 between "inside" and "outside" on floating-point jitter, splitting
 edge-hugging runs at random and costing a needless trim each time.
 
+### Curved satin outlines (line art)
+
+Outlining a curve with a satin column is *the* fundamental technique for
+cartoon and line-art digitizing, and the pipeline could not do it. The
+satin test required a shape to fill at least 55% of its own bounding
+rectangle, which only a **straight** band ever does — a curve fills
+almost none of it. Running a cartoon face through the pipeline, every
+black outline measured elongation 14x–30x with rectangularity
+0.04–0.30, so all of them fell through to fill and came out as mushy
+blobs instead of crisp lines.
+
+A stroke is now recognised from its own medial axis instead
+(`src/params/classify.py`): long relative to its width measured along
+its **centerline** rather than across a bounding box, near-constant
+width down that length, and an area that matches centerline × width.
+
+Three things make that safe:
+
+- **A column per stroke.** Line art doesn't extract as tidy separate
+  strokes — every outline touches its neighbours, so a whole black
+  layer comes out as one connected branching region, of which a single
+  column could only trace 33%. The skeleton is split at its junctions
+  and each branch gets its own column (`_split_into_branches`).
+- **Satin only when it covers the whole stroke.** Anything the columns
+  can't fully cover falls back to fill, which covers everything by
+  construction. Without this a letter "o" — a ring whose skeleton
+  can't always be reassembled into one loop — came out stitched as a
+  "c".
+- **Thin strokes only** (`STROKE_MAX_WIDTH_MM`). Rails derived from a
+  medial axis approximate the true boundary, and at a badge ring's 10mm
+  width that approximation shows as a ragged, flaring edge where a
+  plain fill was clean. Wide bands keep the old behaviour.
+
+Shapes a single column can't honestly represent still fill: a star or a
+plus sign, whose branches are as wide as they are long, and any blob.
+
+A side effect worth knowing: **text now comes out as satin columns**
+rather than tatami fill, which is what a real digitizer would do for
+lettering — letter bowls ("o", "e") still fill, since their rings fail
+the coverage gate above.
+
 ### Manual region review
 
 A real correction workflow, not just a read-only report: every
