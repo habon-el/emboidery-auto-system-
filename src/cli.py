@@ -10,7 +10,7 @@ from src.params.presets import PRESETS, get_preset
 from src.pathing.order import order_by_color_then_distance
 from src.pipeline import digitize_image
 from src.report import write_and_report
-from src.stitches.model import StitchPlan
+from src.stitches.model import DEFAULT_FILL_STYLE, FILL_STYLES, StitchPlan
 from src.stitches.shapes import DEMO_THREAD, SHAPES, build_demo_blocks
 
 
@@ -25,7 +25,8 @@ def cmd_demo(args: argparse.Namespace) -> None:
 def cmd_digitize(args: argparse.Namespace) -> None:
     result = digitize_image(args.input, args.fabric, args.out,
                              border_width_mm=args.border, force=args.force,
-                             target_width_mm=args.width_mm, target_height_mm=args.height_mm)
+                             target_width_mm=args.width_mm, target_height_mm=args.height_mm,
+                             fill_style=args.fill_style)
     s = result["summary"]
     print(f"Analysis: {s['visual_colors_detected']} visual colors detected "
           f"· {s['thread_colors_selected']} thread colors selected "
@@ -72,6 +73,12 @@ def build_parser() -> argparse.ArgumentParser:
                            help="Resize to this finished height in mm "
                                 "(width follows unless --width-mm is also "
                                 "given).")
+    digitize.add_argument("--fill-style", default=DEFAULT_FILL_STYLE, dest="fill_style",
+                           choices=sorted(FILL_STYLES),
+                           help="Default fill pattern for every filled region "
+                                "(tatami/contour/crosshatch/brick) -- overridable "
+                                "per region afterward in the web UI's manual "
+                                "review workflow (default: tatami).")
     digitize.add_argument("--out", required=True,
                            help="Output path stem, e.g. testbench/out/design")
     digitize.add_argument("--force", action="store_true",

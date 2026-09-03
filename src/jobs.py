@@ -15,6 +15,8 @@ import json
 import os
 from dataclasses import asdict, dataclass, field
 
+from src.stitches.model import DEFAULT_FILL_STYLE
+
 SPEC_FILENAME = "job_spec.json"
 
 
@@ -26,6 +28,10 @@ class JobSpec:
     force: bool = False
     width_mm: float | None = None
     height_mm: float | None = None
+    # The design-wide default fill pattern (src/stitches/model.py's
+    # FILL_STYLES), chosen once at upload; a per-region correction can
+    # still override just one region (RegionOverride.fill_style below).
+    default_fill_style: str = DEFAULT_FILL_STYLE
     # region_id -> a RegionOverride's fields, i.e. dataclasses.asdict()
     # of the result of src/review/corrections.py's parse_region_override()
     # -- already validated and type-converted (bool/float/int/tuple, not
@@ -45,6 +51,7 @@ class JobSpec:
             border_width_mm=d.get("border_width_mm", 0.0),
             force=d.get("force", False),
             width_mm=d.get("width_mm"), height_mm=d.get("height_mm"),
+            default_fill_style=d.get("default_fill_style", DEFAULT_FILL_STYLE),
             corrections=d.get("corrections", {}))
 
 

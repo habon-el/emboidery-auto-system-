@@ -24,6 +24,26 @@ UNDERLAY_SATIN = "underlay_satin"
 # without switching fabric or thread (see src/stitches/border.py).
 BORDER = "border"
 
+# Fill *styles* -- how a FILL-type region's interior is actually covered,
+# independent of the stitch-type decision above. A human (or a customer,
+# via the same dropdown) picks one of these instead of the system always
+# defaulting to one look; see src/stitches/fill.py for what each one
+# actually stitches and testbench/generate_fill_previews.py for the real
+# rendered swatch shown next to each choice in the web UI.
+FILL_TATAMI = "tatami"
+FILL_CONTOUR = "contour"
+FILL_CROSSHATCH = "crosshatch"
+FILL_BRICK = "brick"
+FILL_STYLES = (FILL_TATAMI, FILL_CONTOUR, FILL_CROSSHATCH, FILL_BRICK)
+DEFAULT_FILL_STYLE = FILL_TATAMI
+
+FILL_STYLE_LABELS = {
+    FILL_TATAMI: "Tatami (standard rows)",
+    FILL_CONTOUR: "Contour (follows the shape's edge)",
+    FILL_CROSSHATCH: "Cross-Hatch (two-direction)",
+    FILL_BRICK: "Brick (staggered rows)",
+}
+
 
 @dataclass
 class StitchBlock:

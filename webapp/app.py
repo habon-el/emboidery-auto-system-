@@ -22,6 +22,7 @@ from src.pipeline import digitize_image
 from src.regions.model import DigitizeScopeError
 from src.review.corrections import CorrectionValidationError, parse_correction_form
 from src.review.rebuild import rebuild_job
+from src.stitches.model import DEFAULT_FILL_STYLE, FILL_STYLE_LABELS, FILL_STYLES
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RESULTS_DIR = os.path.join(BASE_DIR, "results")
@@ -110,6 +111,17 @@ def _page(body: str) -> str:
   .notice {{ background: #eafaf0; border: 1px solid #b8e2c8; border-radius: 8px;
              padding: 12px 16px; margin: 12px 0; font-size: 0.9rem; }}
   a.review-link {{ display: inline-block; margin-top: 10px; font-weight: 600; }}
+  .fill-style-picker {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+                         gap: 10px; margin-top: 6px; }}
+  .fill-style-option {{ border: 2px solid #ddd; border-radius: 8px; padding: 8px;
+                         cursor: pointer; text-align: center; font-weight: normal; }}
+  .fill-style-option:has(input:checked) {{ border-color: #1c5aaa; background: #f2f6fb; }}
+  .fill-style-option img {{ width: 100%; border-radius: 4px; display: block; margin-bottom: 6px;
+                             border: 1px solid #eee; }}
+  .fill-style-option input {{ width: auto; margin-right: 6px; }}
+  .fill-style-option span {{ font-size: 0.82rem; }}
+  .fill-style-mini {{ display: flex; align-items: center; gap: 8px; margin-top: 4px; }}
+  .fill-style-mini img {{ width: 56px; height: auto; border: 1px solid #eee; border-radius: 4px; }}
 </style>
 </head>
 <body>
@@ -117,6 +129,26 @@ def _page(body: str) -> str:
 {body}
 </body>
 </html>"""
+
+
+def _fill_style_picker_html(name: str, current: str, id_prefix: str = "fs") -> str:
+    """A radio-button grid, one option per real fill style
+    (src/stitches/model.py's FILL_STYLES), each showing the actual
+    rendered stitch swatch (testbench/generate_fill_previews.py) next
+    to its name -- so the choice is made with a real visual reference,
+    not just a name in a dropdown. Used both for the upload form's
+    design-wide default and (compactly) for a per-region override."""
+    options = []
+    for style in FILL_STYLES:
+        checked = " checked" if style == current else ""
+        input_id = f"{id_prefix}-{name}-{style}"
+        options.append(f"""
+    <label class="fill-style-option" for="{input_id}">
+      <img src="/static/fill_previews/{style}.png" alt="{FILL_STYLE_LABELS[style]} sample">
+      <input type="radio" id="{input_id}" name="{name}" value="{style}"{checked}>
+      <span>{FILL_STYLE_LABELS[style]}</span>
+    </label>""")
+    return f'<div class="fill-style-picker">{"".join(options)}</div>'
 
 
 UPLOAD_FORM = f"""
@@ -132,6 +164,15 @@ UPLOAD_FORM = f"""
     <select name="fabric">
       {"".join(f'<option value="{name}">{name}</option>' for name in sorted(PRESETS))}
     </select>
+
+    <label>Fill style (for filled regions)</label>
+    <p style="font-size:0.85rem;color:#666;margin:0 0 4px;">
+      How filled areas get stitched -- pick one now, or leave the
+      default and adjust individual regions later during review. A
+      customer choosing between finished looks can use these same
+      samples as a reference.
+    </p>
+    {_fill_style_picker_html("fill_style", DEFAULT_FILL_STYLE, "upload")}
 
     <label>Finished size (mm, optional)</label>
     <div style="display:flex;gap:10px;">
@@ -397,6 +438,12 @@ def _region_form_html(region_meta: dict, existing: dict) -> str:
     thread_rgb = existing.get("thread_rgb")
     thread_hex = "".join("%02x" % c for c in thread_rgb) if thread_rgb else ""
 
+    fill_style_val = existing.get("fill_style") or ""
+    fill_style_options = opt("", f"unchanged ({region_meta['fill_style']})", fill_style_val)
+    fill_style_options += "".join(opt(s, FILL_STYLE_LABELS[s], fill_style_val) for s in FILL_STYLES)
+    fill_preview_id = f"fillpreview-{rid}"
+    fill_preview_src = f"/static/fill_previews/{fill_style_val or region_meta['fill_style']}.png"
+
     open_attr = " open" if (region_meta["corrected"] or region_meta["needs_review"]) else ""
     corrected_chip = ('<span class="chip" style="background:#eee;color:#555;">corrected</span>'
                        if region_meta["corrected"] else "")
@@ -415,6 +462,15 @@ def _region_form_html(region_meta: dict, existing: dict) -> str:
     </label>
     <label>Density / row spacing (mm)
       <input type="number" step="any" min="0.05" name="{rid}::density_mm" value="{numval('density_mm')}" placeholder="unchanged">
+    </label>
+    <label>Fill style (if this region is fill)
+      <select name="{rid}::fill_style"
+              onchange="document.getElementById('{fill_preview_id}').src='/static/fill_previews/' + (this.value || '{region_meta['fill_style']}') + '.png'">
+        {fill_style_options}
+      </select>
+      <div class="fill-style-mini">
+        <img id="{fill_preview_id}" src="{fill_preview_src}" alt="fill style sample">
+      </div>
     </label>
     <label>Underlay
       <select name="{rid}::underlay">{underlay_options}</select>
@@ -465,6 +521,7 @@ def _review_page_html(job_id: str, spec: JobSpec, result: dict,
   <p class="stat"><b>{result['trim_count']}</b>trims (scissor cuts)</p>
   <p class="stat"><b>{result['runtime_formatted']}</b>est. run time</p>
   <p class="stat"><b>{spec.fabric}</b>fabric</p>
+  <p class="stat"><b>{FILL_STYLE_LABELS[spec.default_fill_style]}</b>default fill style</p>
   {_analysis_summary_html_bar_only(result)}
 
   <div class="preview-frame">
@@ -527,21 +584,24 @@ def _parse_optional_float(value: str | None) -> float | None:
 
 def _run_and_render(job_id: str, input_path: str, fabric: str, border: float,
                      force: bool, width_mm: float | None = None,
-                     height_mm: float | None = None) -> tuple[str, int]:
+                     height_mm: float | None = None,
+                     fill_style: str = DEFAULT_FILL_STYLE) -> tuple[str, int]:
     job_dir = os.path.dirname(input_path)
     out_stem = os.path.join(job_dir, "design")
 
     try:
         result = digitize_image(input_path, fabric, out_stem,
                                  border_width_mm=border, force=force,
-                                 target_width_mm=width_mm, target_height_mm=height_mm)
+                                 target_width_mm=width_mm, target_height_mm=height_mm,
+                                 fill_style=fill_style)
         # Persist enough of this request to redo it later with manual
         # corrections applied (src/review/rebuild.py) -- only saved on
         # success, so a rejected job has nothing to review until it's
         # been force-digitized into an actual result.
         save_job_spec(job_dir, JobSpec(
             input_path=input_path, fabric=fabric, border_width_mm=border,
-            force=force, width_mm=width_mm, height_mm=height_mm))
+            force=force, width_mm=width_mm, height_mm=height_mm,
+            default_fill_style=fill_style))
     except DigitizeScopeError as e:
         retry = "" if force else f"""
 <form action="/force/{job_id}" method="post" style="margin-top:12px;">
@@ -549,6 +609,7 @@ def _run_and_render(job_id: str, input_path: str, fabric: str, border: float,
   <input type="hidden" name="border" value="{border}">
   <input type="hidden" name="width_mm" value="{width_mm or ''}">
   <input type="hidden" name="height_mm" value="{height_mm or ''}">
+  <input type="hidden" name="fill_style" value="{fill_style}">
   <button type="submit" style="background:#a94442;">Force digitize anyway</button>
 </form>"""
         return _page(f'<div class="card error"><p><b>Rejected:</b> {e}</p>'
@@ -567,6 +628,7 @@ def _run_and_render(job_id: str, input_path: str, fabric: str, border: float,
   <p class="stat"><b>{result['trim_count']}</b>trims (scissor cuts)</p>
   <p class="stat"><b>{result['runtime_formatted']}</b>est. run time</p>
   <p class="stat"><b>{fabric}</b>fabric</p>
+  <p class="stat"><b>{FILL_STYLE_LABELS[fill_style]}</b>fill style</p>
   {warnings_html}
   {_analysis_summary_html(result)}
   <a class="review-link" href="/review/{job_id}">Review &amp; correct regions &rarr;</a>
@@ -607,6 +669,9 @@ def digitize():
     force = request.form.get("force") == "1"
     width_mm = _parse_optional_float(request.form.get("width_mm"))
     height_mm = _parse_optional_float(request.form.get("height_mm"))
+    fill_style = request.form.get("fill_style", DEFAULT_FILL_STYLE)
+    if fill_style not in FILL_STYLES:
+        fill_style = DEFAULT_FILL_STYLE
 
     job_id = uuid.uuid4().hex[:12]
     job_dir = os.path.join(RESULTS_DIR, job_id)
@@ -615,7 +680,8 @@ def digitize():
     input_path = os.path.join(job_dir, f"input{ext}")
     file.save(input_path)
 
-    return _run_and_render(job_id, input_path, fabric, border, force, width_mm, height_mm)
+    return _run_and_render(job_id, input_path, fabric, border, force, width_mm, height_mm,
+                            fill_style)
 
 
 @app.route("/force/<job_id>", methods=["POST"])
@@ -639,9 +705,12 @@ def force_digitize(job_id):
         border = 0.0
     width_mm = _parse_optional_float(request.form.get("width_mm"))
     height_mm = _parse_optional_float(request.form.get("height_mm"))
+    fill_style = request.form.get("fill_style", DEFAULT_FILL_STYLE)
+    if fill_style not in FILL_STYLES:
+        fill_style = DEFAULT_FILL_STYLE
 
     return _run_and_render(job_id, input_path, fabric, border, force=True,
-                            width_mm=width_mm, height_mm=height_mm)
+                            width_mm=width_mm, height_mm=height_mm, fill_style=fill_style)
 
 
 @app.route("/review/<job_id>")

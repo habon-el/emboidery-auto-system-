@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass, replace
 
 from src.params.classify import Classification
 from src.params.presets import FabricPreset
-from src.stitches.model import FILL, RUNNING, SATIN
+from src.stitches.model import DEFAULT_FILL_STYLE, FILL, FILL_STYLES, RUNNING, SATIN
 
 VALID_STITCH_TYPES = {FILL, SATIN, RUNNING}
 
@@ -33,6 +33,12 @@ class RegionOverride:
     # the automatic distance-based rule (src/pathing/route.py) in
     # charge; True/False forces a cut on/off at this region's start.
     force_trim: bool | None = None
+    # Which real fill pattern to stitch this region with (src/stitches
+    # /model.py's FILL_STYLES) -- None leaves the job's own default
+    # (set at upload, see src/jobs.py's JobSpec.default_fill_style)
+    # standing for this region. Only takes effect if the region ends up
+    # FILL-type; harmless (and ignored) otherwise.
+    fill_style: str | None = None
 
     def is_noop(self) -> bool:
         return all(v is None for v in asdict(self).values())
@@ -82,6 +88,11 @@ def parse_region_override(raw: dict) -> RegionOverride:
     underlay = _parse_tri_bool(raw, "underlay")
     force_trim = _parse_tri_bool(raw, "force_trim")
 
+    fill_style = (raw.get("fill_style") or "").strip() or None
+    if fill_style and fill_style not in FILL_STYLES:
+        raise CorrectionValidationError(
+            f"'fill_style' must be one of {sorted(FILL_STYLES)}, got {fill_style!r}.")
+
     z_order_raw = (raw.get("z_order") or "").strip()
     z_order = None
     if z_order_raw:
@@ -104,7 +115,8 @@ def parse_region_override(raw: dict) -> RegionOverride:
 
     return RegionOverride(stitch_type=stitch_type, angle_deg=angle_deg, density_mm=density_mm,
                            underlay=underlay, border_width_mm=border_width_mm,
-                           z_order=z_order, thread_rgb=thread_rgb, force_trim=force_trim)
+                           z_order=z_order, thread_rgb=thread_rgb, force_trim=force_trim,
+                           fill_style=fill_style)
 
 
 def parse_correction_form(form: dict, region_ids: set[str]) -> dict[str, "RegionOverride"]:
@@ -152,17 +164,20 @@ def override_from_stored(d: dict) -> RegionOverride:
         density_mm=d.get("density_mm"), underlay=d.get("underlay"),
         border_width_mm=d.get("border_width_mm"), z_order=d.get("z_order"),
         thread_rgb=tuple(thread_rgb) if thread_rgb is not None else None,
-        force_trim=d.get("force_trim"))
+        force_trim=d.get("force_trim"), fill_style=d.get("fill_style"))
 
 
 def resolve_override(classification: Classification, fabric: FabricPreset,
-                      default_border_width_mm: float, override: RegionOverride | None
-                      ) -> tuple[Classification, FabricPreset, float, bool]:
-    """Returns (classification, fabric, border_width_mm, include_underlay)
-    to actually build one region's blocks with -- the automatic
-    decision stands for every field the override leaves as None."""
+                      default_border_width_mm: float,
+                      default_fill_style: str = DEFAULT_FILL_STYLE,
+                      override: RegionOverride | None = None
+                      ) -> tuple[Classification, FabricPreset, float, str, bool]:
+    """Returns (classification, fabric, border_width_mm, fill_style,
+    include_underlay) to actually build one region's blocks with -- the
+    automatic decision (and the job's own default_fill_style) stands
+    for every field the override leaves as None."""
     if override is None:
-        return classification, fabric, default_border_width_mm, True
+        return classification, fabric, default_border_width_mm, default_fill_style, True
 
     stitch_type = override.stitch_type or classification.stitch_type
     angle_deg = override.angle_deg if override.angle_deg is not None else classification.angle_deg
@@ -182,6 +197,7 @@ def resolve_override(classification: Classification, fabric: FabricPreset,
 
     border_width_mm = (override.border_width_mm if override.border_width_mm is not None
                         else default_border_width_mm)
+    fill_style = override.fill_style if override.fill_style is not None else default_fill_style
     include_underlay = override.underlay if override.underlay is not None else True
 
-    return classification, fabric, border_width_mm, include_underlay
+    return classification, fabric, border_width_mm, fill_style, include_underlay

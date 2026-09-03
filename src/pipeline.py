@@ -19,8 +19,8 @@ from src.regions.scope import apply_findings, check_min_feature_size
 from src.report import write_and_report
 from src.review.corrections import RegionOverride, resolve_override
 from src.stitches.build import build_blocks_for_region
-from src.stitches.model import (FILL, RUNNING, SATIN, StitchBlock, StitchPlan,
-                                 ThreadColor)
+from src.stitches.model import (DEFAULT_FILL_STYLE, FILL, FILL_STYLES, RUNNING,
+                                 SATIN, StitchBlock, StitchPlan, ThreadColor)
 from src.validate.checks import validate_plan
 
 # A region classified with confidence below this is close enough to a
@@ -60,7 +60,8 @@ def load_scaled_region_set(input_path: str, force: bool,
 def digitize_image(input_path: str, fabric_name: str, out_stem: str,
                     border_width_mm: float = 0.0, force: bool = False,
                     target_width_mm: float | None = None,
-                    target_height_mm: float | None = None) -> dict:
+                    target_height_mm: float | None = None,
+                    fill_style: str = DEFAULT_FILL_STYLE) -> dict:
     """Runs the full pipeline and returns a dict: the write_and_report()
     result (dst/pes/preview paths, stitch_count, runtime) plus a
     "warnings" list, an analysis "summary", and per-region "regions"
@@ -78,16 +79,28 @@ def digitize_image(input_path: str, fabric_name: str, out_stem: str,
     real digitizing workflows do first, so density/stitch-length are
     calculated for the actual output size, not the source image's
     incidental resolution.
+
+    fill_style (src/stitches/model.py's FILL_STYLES) is the *default*
+    fill pattern for every FILL-type region in this design -- a human
+    (or customer) choice made once at upload time, overridable per
+    region afterward in the manual-review workflow. Never decided
+    automatically: an unrecognized value is rejected rather than
+    silently substituted, on the same principle as an unknown fabric
+    preset.
     """
+    if fill_style not in FILL_STYLES:
+        raise ValueError(f"fill_style must be one of {sorted(FILL_STYLES)}, got {fill_style!r}.")
     fabric = get_preset(fabric_name)
     region_set, warnings = load_scaled_region_set(
         input_path, force, target_width_mm, target_height_mm)
-    return build_and_export(region_set, fabric, out_stem, border_width_mm, warnings)
+    return build_and_export(region_set, fabric, out_stem, border_width_mm, warnings,
+                             default_fill_style=fill_style)
 
 
 def build_and_export(region_set: RegionSet, fabric, out_stem: str,
                       border_width_mm: float, warnings: list[str],
-                      corrections: dict[str, RegionOverride] | None = None
+                      corrections: dict[str, RegionOverride] | None = None,
+                      default_fill_style: str = DEFAULT_FILL_STYLE
                       ) -> dict:
     """Classification, per-region correction overrides, stitch
     generation, pathing, validation, export, and the analysis summary --
@@ -102,13 +115,17 @@ def build_and_export(region_set: RegionSet, fabric, out_stem: str,
     classification from scratch is safe (determinism) rather than
     needing to cache/restore each region's prior state.
 
+    default_fill_style (src/stitches/model.py's FILL_STYLES) is the
+    design-wide fill pattern every FILL-type region uses unless its own
+    correction overrides it (RegionOverride.fill_style).
+
     Returns write_and_report()'s dict plus:
       "warnings": list[str]
       "summary": {visual_colors_detected, thread_colors_selected,
                   filled_regions, satin_columns, running_stitch_details,
                   texture_zones, warnings_requiring_review}
-      "regions": [{id, color_index, z_order, stitch_type, reason,
-                   confidence, needs_review, redirected_from_satin,
+      "regions": [{id, color_index, z_order, stitch_type, fill_style,
+                   reason, confidence, needs_review, redirected_from_satin,
                    texture_zone, texture_confidence, thread_name,
                    thread_code, thread_delta_e, thread_rgb_hex,
                    corrected, bbox_pct}, ...]
@@ -120,6 +137,7 @@ def build_and_export(region_set: RegionSet, fabric, out_stem: str,
     all_blocks: list[StitchBlock] = []
     classifications = []
     z_order_by_element: dict[str, int] = {}
+    fill_style_by_element: dict[str, str] = {}
     extra_colors: list[ThreadColor] = []
     color_override_index: dict[str, int] = {}
     next_color_index = len(region_set.colors)
@@ -128,15 +146,16 @@ def build_and_export(region_set: RegionSet, fabric, out_stem: str,
     for region in region_set.regions:
         classification = classify_region(region, fabric)
         override = corrections.get(region.region_id)
-        eff_classification, eff_fabric, eff_border, include_underlay = resolve_override(
-            classification, fabric, border_width_mm, override)
+        eff_classification, eff_fabric, eff_border, eff_fill_style, include_underlay = resolve_override(
+            classification, fabric, border_width_mm, default_fill_style, override)
         classifications.append((region, eff_classification))
 
         z_order_by_element[region.region_id] = (
             override.z_order if (override and override.z_order is not None) else region.z_order)
+        fill_style_by_element[region.region_id] = eff_fill_style
 
         blocks = build_blocks_for_region(
-            region, eff_classification, eff_fabric, eff_border, include_underlay)
+            region, eff_classification, eff_fabric, eff_border, include_underlay, eff_fill_style)
 
         if override and override.thread_rgb is not None:
             new_index = next_color_index
@@ -218,6 +237,7 @@ def build_and_export(region_set: RegionSet, fabric, out_stem: str,
             "color_index": color_index,
             "z_order": z_order_by_element[region.region_id],
             "stitch_type": classification.stitch_type,
+            "fill_style": fill_style_by_element[region.region_id],
             "reason": classification.reason,
             "confidence": round(classification.confidence, 2),
             "needs_review": needs_review,

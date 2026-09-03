@@ -104,6 +104,38 @@ What's in place:
   as a pathing tiebreak (`src/pathing/order.py`), overridable per region
   in the manual review workflow below.
 
+### Selectable fill styles
+
+Which fill regions actually get isn't decided unilaterally: you (or a
+customer) pick from four real digitizing fill patterns, each shown as
+an actual rendered stitch swatch rather than a name in a dropdown
+(`testbench/generate_fill_previews.py`), so the choice is made with a
+real visual reference:
+
+- **Tatami** (standard rows) — parallel straight rows, offset row-to-row
+  so needle holes don't line up into a visible seam. The default, and
+  still the right choice for most flat blocks.
+- **Contour** (follows the shape's edge) — concentric rings that hug
+  the region's own curves instead of one straight-line angle picked
+  once for the whole shape. This is what fixes two differently-curved
+  neighboring letters/regions reading as pointing in unrelated
+  directions under a single global angle.
+- **Cross-Hatch** (two-direction) — two tatami passes at 90 degrees;
+  denser, more stable on stretchy fabric. (Also still applied
+  automatically to texture-flagged regions regardless of fill style —
+  see Multi-Region Illustration Digitization above.)
+- **Brick** (staggered rows) — tatami rows with alternating rows'
+  needle points phase-shifted half a stitch length, for a softer, less
+  visibly "laddered" look on a larger fill.
+
+Pick a design-wide default at upload (`--fill-style` on the CLI, or the
+picker on the web UI's upload form), then override just one problem
+region afterward in **Manual region review** below without touching
+the rest — the same "leave blank to keep the automatic/default choice"
+pattern every other per-region correction already uses. See
+`src/stitches/fill.py` for what each style actually generates and
+`src/stitches/model.py`'s `FILL_STYLES`.
+
 ### Manual region review
 
 A real correction workflow, not just a read-only report: every
@@ -113,8 +145,8 @@ A real correction workflow, not just a read-only report: every
 - a summary table (visual/thread color counts, stitch-type counts,
   texture-zone count, warning count), and
 - a per-region form to override stitch type, angle, density/row
-  spacing, underlay on/off, border width, layer order, thread color,
-  and where the machine's automatic thread trimmer cuts.
+  spacing, fill style, underlay on/off, border width, layer order,
+  thread color, and where the machine's automatic thread trimmer cuts.
 
 **Trim control** ("where the scissors will go"): every run reports a
 real trim count (`result["trim_count"]`, counted from the actual

@@ -18,4 +18,4 @@ def rebuild_job(spec: JobSpec, out_stem: str) -> dict:
     corrections = {region_id: override_from_stored(d)
                    for region_id, d in spec.corrections.items()}
     return build_and_export(region_set, fabric, out_stem, spec.border_width_mm,
-                             warnings, corrections)
+                             warnings, corrections, default_fill_style=spec.default_fill_style)
