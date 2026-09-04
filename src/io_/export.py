@@ -12,7 +12,7 @@ import pyembroidery as pe
 
 from src.pathing.route import needs_jump, needs_trim
 from src.stitches.model import MIN_STITCH_LENGTH_MM, StitchPlan
-from .units import mm_to_units
+from .units import mm_to_units, quantize_point_mm
 
 # A tie ("lock") stitch: a tiny there-and-back needle penetration right
 # at a thread cut, so the trimmed end can't work loose off the machine.
@@ -24,7 +24,14 @@ from .units import mm_to_units
 # simple two-stitch (forward-then-back) lock, not the fancier 3-5
 # stitch multi-directional version some packages offer -- upgrade this
 # if a real sew-out ever shows it isn't holding.
-TIE_STITCH_LENGTH_MM = 0.3
+# Long enough to survive the 1/10 mm grid a stitch file stores
+# coordinates on (src/io_/units.py's quantize_mm): a tie stitch at
+# exactly the 0.3mm minimum lands at 0.283mm once a 45-degree
+# diagonal's components are snapped to the grid, which is a
+# sub-minimum stitch in the delivered file. 0.45mm leaves room for
+# the worst case (up to 0.05mm lost per axis) and is still a lock
+# stitch, not a visible one.
+TIE_STITCH_LENGTH_MM = 0.45
 
 
 def _unit_vector(p_from: tuple[float, float], p_to: tuple[float, float]
@@ -53,7 +60,9 @@ def _emit_tie_out(p: pe.EmbPattern, prev_point: tuple[float, float],
     if t <= 0:
         return
     ux, uy = unit
-    back_point = (cut_point[0] - ux * t, cut_point[1] - uy * t)
+    back_point = quantize_point_mm((cut_point[0] - ux * t, cut_point[1] - uy * t))
+    if math.hypot(back_point[0] - cut_point[0], back_point[1] - cut_point[1]) < MIN_STITCH_LENGTH_MM:
+        return
     p.add_stitch_absolute(pe.STITCH, *mm_to_units_pt(back_point))
     p.add_stitch_absolute(pe.STITCH, *mm_to_units_pt(cut_point))
 
@@ -72,7 +81,9 @@ def _emit_tie_in(p: pe.EmbPattern, entry_point: tuple[float, float],
     if t <= 0:
         return
     ux, uy = unit
-    fwd_point = (entry_point[0] + ux * t, entry_point[1] + uy * t)
+    fwd_point = quantize_point_mm((entry_point[0] + ux * t, entry_point[1] + uy * t))
+    if math.hypot(fwd_point[0] - entry_point[0], fwd_point[1] - entry_point[1]) < MIN_STITCH_LENGTH_MM:
+        return
     p.add_stitch_absolute(pe.STITCH, *mm_to_units_pt(fwd_point))
     p.add_stitch_absolute(pe.STITCH, *mm_to_units_pt(entry_point))
 
@@ -95,7 +106,17 @@ def _sewable_points(points: list[tuple[float, float]],
     (a fill's next row, a satin branch starting where the last one
     ended): the block's own first point is then measured against it
     too, since stitching it again from 0mm away is the same 0mm
-    stitch as a duplicate inside a run."""
+    stitch as a duplicate inside a run.
+
+    Points are snapped to the file's own 1/10 mm grid before being
+    compared, because that is what the machine will actually run: a
+    0.30mm stitch on a diagonal becomes 0.283mm once written, so
+    filtering the un-snapped floats let 125 sub-minimum stitches
+    through into a file the audit called clean."""
+    points = [quantize_point_mm(p) for p in points]
+    if continuing_from is not None:
+        continuing_from = quantize_point_mm(continuing_from)
+
     kept: list[tuple[float, float]] = []
     last_needle = continuing_from
     for p in points:

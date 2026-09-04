@@ -9,6 +9,7 @@ import pytest
 import pyembroidery as pe
 
 from src.io_.export import TIE_STITCH_LENGTH_MM, stitch_plan_to_pattern
+from src.io_.units import quantize_mm
 from src.pathing.route import TRIM_THRESHOLD_MM
 from src.stitches.model import RUNNING, StitchBlock, StitchPlan, ThreadColor
 
@@ -50,7 +51,9 @@ def test_tie_out_backtracks_then_returns_to_the_cut_point():
     (back_pt, back_kind), (cut_pt, cut_kind) = points[trim_idx - 2], points[trim_idx - 1]
     assert back_kind == pe.STITCH and cut_kind == pe.STITCH
     assert cut_pt == (4.0, 0.0)  # the actual last point of block a
-    assert back_pt[0] == pytest.approx(4.0 - TIE_STITCH_LENGTH_MM)
+    # Snapped to the file's 1/10mm grid, like every written
+    # coordinate (src/io_/units.py's quantize_mm).
+    assert back_pt[0] == pytest.approx(quantize_mm(4.0 - TIE_STITCH_LENGTH_MM))
     assert points[trim_idx][0] == (4.0, 0.0)  # TRIM fires at the cut point
 
 
@@ -68,7 +71,7 @@ def test_tie_in_steps_forward_then_returns_to_the_entry_point():
     (fwd_pt, fwd_kind), (back_pt, back_kind) = points[jump_idx + 1], points[jump_idx + 2]
     assert fwd_kind == pe.STITCH and back_kind == pe.STITCH
     assert back_pt == (entry, 0.0)  # returns exactly to the entry point
-    assert fwd_pt[0] == pytest.approx(entry + TIE_STITCH_LENGTH_MM)
+    assert fwd_pt[0] == pytest.approx(quantize_mm(entry + TIE_STITCH_LENGTH_MM))
     # The block's real second point still follows, unchanged.
     assert points[jump_idx + 3] == ((entry + 2.0, 0.0), pe.STITCH)
 
@@ -103,7 +106,7 @@ def test_no_double_tie_out_when_color_change_and_distance_trim_coincide():
     (back_pt, back_kind), (cut_pt, cut_kind) = points[trim_idx - 2], points[trim_idx - 1]
     assert back_kind == pe.STITCH and cut_kind == pe.STITCH
     assert cut_pt == (2.0, 0.0)
-    assert back_pt == pytest.approx((2.0 - TIE_STITCH_LENGTH_MM, 0.0))
+    assert back_pt == pytest.approx((quantize_mm(2.0 - TIE_STITCH_LENGTH_MM), 0.0))
     # And the point right before that pair is block a's own real last
     # stitch, not a second tie-out.
     assert points[trim_idx - 3] == ((2.0, 0.0), pe.STITCH)

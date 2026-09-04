@@ -327,7 +327,14 @@ own target, regions under the size floor, run time and thread use.
 ```bash
 python -m testbench.audit_fixtures               # one comparable table over every fixture
 python -m testbench.audit_fixtures --acceptance  # the MVP bar, pass/fail per fixture
+python -m testbench.check_dst old.dst new.dst    # measure any finished file, or compare two
 ```
+
+`check_dst` reads a *finished* DST/PES off disk rather than re-running
+the pipeline, so it works on output from an older version of this tool,
+on a file a customer sent, or on one another package produced -- the
+same yardstick for all of them. It is how the sub-minimum-stitch bug
+below was caught.
 
 The audit is the before/after instrument for anything that touches
 stitch generation or pathing. It found, and the fixes are measured by it:
@@ -355,6 +362,13 @@ stitch generation or pathing. It found, and the fixes are measured by it:
 - **Split satin** past the 7mm maximum and **pull compensation on fills**
   (rows extend along their direction by the preset's amount, as satin
   rails always have).
+- **Stitch lengths are checked on the file's own 1/10mm grid.** Every
+  stitch format stores coordinates there, and a 0.30mm stitch running
+  at 45 degrees has 0.212mm components that each snap to 0.2mm -- a
+  0.283mm stitch in the delivered file. Checking the floats upstream
+  let 125 of those into a cartoon-face DST the audit called clean.
+  Points are now snapped before the minimum is enforced, and tie
+  stitches are 0.45mm so they survive the snap.
 
 The **small-feature policy** (`src/validate/features.py`) replaces the
 bare-number rejection: the size floor is judged on a feature's overall

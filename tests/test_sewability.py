@@ -44,7 +44,8 @@ def test_audit_counts_travel_from_the_command_stream():
     assert audit.longest_jump_mm == pytest.approx(20.0)
     assert audit.color_changes == 0
     assert audit.stitches_below_min == 0
-    assert audit.stitch_min_mm == pytest.approx(0.3)   # the tie stitches
+    # The tie stitches, snapped to the file's 1/10mm grid.
+    assert audit.stitch_min_mm >= MIN_STITCH_LENGTH_MM - 1e-9
     assert audit.problems() == []
 
 
@@ -345,3 +346,33 @@ def test_fill_rows_are_pull_compensated_along_the_stitch_direction():
     assert min(x for x, _ in comp) == pytest.approx(-0.3, abs=0.01)
     assert max(y for _, y in comp) <= 20.0 + 1e-6
     assert min(y for _, y in comp) >= 0.0 - 1e-6
+
+
+def test_the_written_file_has_no_sub_minimum_stitch(tmp_path):
+    """Regression, and the reason testbench/check_dst.py exists: the
+    audit measured the in-memory plan, but a file stores coordinates
+    on a 1/10mm grid. A 0.30mm stitch running at 45 degrees has
+    0.212mm components, each of which snaps to 0.2mm -- a 0.283mm
+    stitch in the delivered file. The cartoon face shipped 125 of them
+    while the audit reported zero. Measured here on the DST read back
+    off disk, which is what the machine runs."""
+    import pyembroidery as pe
+    from src.pipeline import digitize_image
+    out_stem = str(tmp_path / "out")
+    digitize_image(os.path.join(INPUTS, "text_with_bowls.png"), "twill", out_stem)
+
+    pattern = pe.EmbPattern.read_dst(f"{out_stem}.dst")
+    prev = None
+    shortest = None
+    for x, y, cmd in pattern.stitches:
+        kind = cmd & pe.COMMAND_MASK
+        if kind == pe.STITCH:
+            if prev is not None:
+                length = math.hypot(x - prev[0], y - prev[1]) / 10.0
+                shortest = length if shortest is None else min(shortest, length)
+            prev = (x, y)
+        elif kind == pe.JUMP:
+            prev = None   # the entry point after a jump is not a stitch
+    assert shortest is not None
+    assert shortest >= MIN_STITCH_LENGTH_MM - 1e-9, (
+        f"written DST contains a {shortest:.3f}mm stitch")
