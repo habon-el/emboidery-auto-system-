@@ -165,14 +165,24 @@ def _narrowest_mm(polygon) -> float:
 
 
 def _target_density(stitch_type: str, fabric: FabricPreset, fill_style: str | None,
-                     texture_zone: bool) -> float:
+                     texture_zone: bool, width_mm: float = 0.0) -> float:
     """mm of thread per mm^2 the preset asks for. A tatami row every
     row_spacing puts 1/row_spacing mm of thread across each mm^2; the
     two-pass styles (cross-hatch, or the automatic texture pass in
     src/stitches/build.py) add a second layer at 1.6x the spacing. A
-    satin zigzag crosses the column twice per density step."""
+    satin zigzag crosses the column twice per density step.
+
+    Satin's target accounts for pull compensation, which genuinely
+    lengthens every crossing by that much and so is thread the preset
+    asked for, not thread to flag: on a 1.1mm letter stroke the 0.15mm
+    twill compensation is 13% more thread. Judging satin against a
+    bare 2/density reported ten narrow strokes across two fixtures as
+    over-dense when each was doing exactly what it was told."""
     if stitch_type == SATIN:
-        return 2.0 / fabric.satin_density_mm
+        crossings_per_mm = 2.0 / fabric.satin_density_mm
+        if width_mm <= 0:
+            return crossings_per_mm
+        return crossings_per_mm * (width_mm + fabric.pull_compensation_mm) / width_mm
     if stitch_type == FILL:
         base = 1.0 / fabric.fill_row_spacing_mm
         if fill_style == FILL_CROSSHATCH or texture_zone:
@@ -270,7 +280,8 @@ def audit_plan(plan: StitchPlan, fabric: FabricPreset,
         height = maxy - miny
         density = top_thread_by_element.get(rid, 0.0) / area if area > 0 else 0.0
         target = _target_density(classification.stitch_type, fabric,
-                                 fill_style_by_element.get(rid), region.texture_zone)
+                                 fill_style_by_element.get(rid), region.texture_zone,
+                                 classification.medial.avg_width_mm)
         audit.regions.append(RegionAudit(
             region_id=rid,
             stitch_type=classification.stitch_type,

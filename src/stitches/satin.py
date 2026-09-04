@@ -7,7 +7,7 @@ the rail, not a fill row spacing.
 """
 import math
 
-from .model import MAX_STITCH_LENGTH_MM, Point
+from .model import MAX_STITCH_LENGTH_MM, MIN_STITCH_LENGTH_MM, Point
 
 
 def _resample_by_arclength(path: list[Point], n_points: int) -> list[Point]:
@@ -50,6 +50,12 @@ def _length(path: list[Point]) -> float:
                for (x0, y0), (x1, y1) in zip(path, path[1:]))
 
 
+def _toward(point: Point, other: Point, fraction: float) -> Point:
+    """point moved `fraction` of the way toward `other`."""
+    return (point[0] + (other[0] - point[0]) * fraction,
+            point[1] + (other[1] - point[1]) * fraction)
+
+
 def _widen(rail_a: Point, rail_b: Point, amount_mm: float
            ) -> tuple[Point, Point]:
     """Push both rail points apart by amount_mm to compensate for pull-in."""
@@ -85,6 +91,38 @@ def _split_long_stitch(out: list[Point], q: Point, index: int,
     out.append(q)
 
 
+# On a curve the inner rail is shorter than the outer one, so evenly
+# spaced crossings land their inner needle points far closer together
+# than their outer ones -- measured down to 0.013mm apart on a tight
+# letter bowl. Nothing catches this upstream: those two points are not
+# consecutive in stitch order (the zigzag goes inner, outer, inner),
+# so the minimum-stitch guard never compares them. On the machine the
+# inner edge of every curve gets perforated in one place until the
+# thread cuts the fabric.
+#
+# The fix is the digitizer's "short stitch": where the inner rail
+# bunches, alternate crossings stop short of it instead of reaching
+# all the way, so the inner penetrations alternate between the rail
+# and a point inset from it and no single line of fabric takes them
+# all. The outer edge, where there is room, is untouched.
+SHORT_STITCH_INSET = 0.35        # of the column's local width
+SHORT_STITCH_TRIGGER_MM = MIN_STITCH_LENGTH_MM
+
+
+def _short_stitch_mask(rail: list[Point], trigger_mm: float) -> list[bool]:
+    """True at each index whose needle point should be pulled back off
+    this rail. Only alternate points inside a bunched run are marked,
+    so a rail with room keeps every point on the edge."""
+    mask = [False] * len(rail)
+    for i in range(1, len(rail)):
+        gap = math.hypot(rail[i][0] - rail[i - 1][0], rail[i][1] - rail[i - 1][1])
+        # Pull back only if the point before it stayed on the rail --
+        # that is what leaves full, short, full, short down the run.
+        if gap < trigger_mm and not mask[i - 1]:
+            mask[i] = True
+    return mask
+
+
 def generate_satin(rail_a: list[Point], rail_b: list[Point],
                     density_mm: float, pull_compensation_mm: float = 0.0,
                     max_stitch_mm: float = MAX_STITCH_LENGTH_MM) -> list[Point]:
@@ -108,9 +146,18 @@ def generate_satin(rail_a: list[Point], rail_b: list[Point],
     a = _resample_by_arclength(rail_a, n_points)
     b = _resample_by_arclength(rail_b, n_points)
 
+    short_a = _short_stitch_mask(a, SHORT_STITCH_TRIGGER_MM)
+    short_b = _short_stitch_mask(b, SHORT_STITCH_TRIGGER_MM)
+
     out: list[Point] = []
     for i in range(n_points):
         pa, pb = _widen(a[i], b[i], pull_compensation_mm / 2)
+        # Never shorten both ends of the same crossing -- that would
+        # leave a gap up the middle of the column instead of covering it.
+        if short_a[i] and not short_b[i]:
+            pa = _toward(pa, pb, SHORT_STITCH_INSET)
+        elif short_b[i] and not short_a[i]:
+            pb = _toward(pb, pa, SHORT_STITCH_INSET)
         for j, point in enumerate((pa, pb)):
             if out:
                 _split_long_stitch(out, point, 2 * i + j, max_stitch_mm)

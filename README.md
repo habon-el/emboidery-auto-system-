@@ -362,6 +362,15 @@ stitch generation or pathing. It found, and the fixes are measured by it:
 - **Split satin** past the 7mm maximum and **pull compensation on fills**
   (rows extend along their direction by the preset's amount, as satin
   rails always have).
+- **Short stitches on tight curves.** On a curve the inner rail is
+  shorter than the outer, so evenly spaced crossings pile their inner
+  needle points together -- measured 0.013mm apart on a letter bowl,
+  and invisible to the minimum-stitch guard because those two points
+  are not consecutive in stitch order. On fabric that perforates the
+  inner edge until the thread cuts it. Where a rail bunches, alternate
+  crossings now stop short of it, so the inner penetrations alternate
+  between the rail and a point inset from it. Same-side gaps under the
+  machine minimum: 25.1% -> 0.7% on a word, 7.7% -> 1.1% on the face.
 - **Stitch lengths are checked on the file's own 1/10mm grid.** Every
   stitch format stores coordinates there, and a 0.30mm stitch running
   at 45 degrees has 0.212mm components that each snap to 0.2mm -- a
@@ -391,10 +400,10 @@ like any other correction, and filling the hole the dropped region sat in.
   around its eyes) is sewn run by run; runs more than 6mm apart still
   trim. Real digitizers travel between them under a later-sewn region
   or along the edge, which is not done here.
-- **No short-stitch thinning on tight satin curves.** Rails are resampled
-  by arc length independently, which avoids inner-rail bunching at the
-  cost of slightly skewed crossings on tight curves. Nothing measurable
-  by the audit; needs a sew-out to judge.
+- **A few inner-edge penetrations still bunch** where *both* rails are
+  tight at once (about 1% of same-side gaps on the cartoon face). Short
+  stitches only pull back one side of a crossing, since shortening both
+  would leave a gap up the middle of the column.
 - **SVG paint order is not captured** as `z_order`; every SVG region
   sits on one layer and sews nearest-first.
 

@@ -376,3 +376,51 @@ def test_the_written_file_has_no_sub_minimum_stitch(tmp_path):
     assert shortest is not None
     assert shortest >= MIN_STITCH_LENGTH_MM - 1e-9, (
         f"written DST contains a {shortest:.3f}mm stitch")
+
+
+def test_short_stitches_spread_the_inner_edge_of_a_tight_curve():
+    """Regression: on a curve the inner rail is shorter than the outer,
+    so evenly spaced crossings pile their inner needle points on top of
+    one another -- measured to 0.013mm apart on a letter bowl, and
+    invisible to the minimum-stitch guard because those two points are
+    not consecutive in stitch order. On fabric that perforates the
+    inner edge until the thread cuts it.
+
+    A tight arc here: without short stitches a quarter of the inner
+    penetrations land closer than the machine minimum."""
+    import math as _m
+    from src.stitches.satin import generate_satin
+    radius, width, sweep = 3.0, 2.0, _m.pi
+    n = 60
+    inner = [((radius - width / 2) * _m.cos(sweep * i / n),
+              (radius - width / 2) * _m.sin(sweep * i / n)) for i in range(n + 1)]
+    outer = [((radius + width / 2) * _m.cos(sweep * i / n),
+              (radius + width / 2) * _m.sin(sweep * i / n)) for i in range(n + 1)]
+
+    points = generate_satin(inner, outer, density_mm=0.35)
+    inner_side = points[0::2]
+    gaps = [_m.hypot(b[0] - a[0], b[1] - a[1])
+            for a, b in zip(inner_side, inner_side[1:])]
+    assert min(gaps) >= MIN_STITCH_LENGTH_MM * 0.9, (
+        f"inner edge still bunches to {min(gaps):.3f}mm")
+
+    # The column must still be covered: the outer edge is untouched, and
+    # every crossing still reaches it.
+    outer_side = points[1::2]
+    outer_radii = [_m.hypot(x, y) for x, y in outer_side]
+    assert min(outer_radii) >= radius + width / 2 - 0.05
+
+
+def test_satin_density_target_accounts_for_pull_compensation():
+    """The audit judged satin against a bare 2/density, which ignores
+    pull compensation -- real thread the preset asked for, and 13% of
+    the total on a 1.1mm letter stroke. Ten narrow strokes across two
+    fixtures were reported over-dense while doing exactly as told."""
+    from src.validate.audit import _target_density
+    fabric = get_preset("twill")
+    bare = 2.0 / fabric.satin_density_mm
+    assert _target_density(SATIN, fabric, None, False, width_mm=0.0) == pytest.approx(bare)
+    narrow = _target_density(SATIN, fabric, None, False, width_mm=1.1)
+    wide = _target_density(SATIN, fabric, None, False, width_mm=6.0)
+    assert narrow > wide > bare
+    assert narrow == pytest.approx(bare * (1.1 + fabric.pull_compensation_mm) / 1.1)
