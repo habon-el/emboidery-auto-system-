@@ -99,10 +99,11 @@ What's in place:
   0-1 confidence score (how far the deciding measurement sits from its
   threshold), rolled up into the "N warning(s) requiring review" count.
 - **Region containment/layer order**: each region carries a `z_order`
-  (draw/paint order — meaningful document order for SVG input, discovery
-  order for raster) used both to display a sensible default layering and
-  as a pathing tiebreak (`src/pathing/order.py`), overridable per region
-  in the manual review workflow below.
+  (a layer among regions of the same color -- every raster region of a
+  color shares one, since same-color raster regions can never overlap)
+  that the sew order (`src/pathing/order.py`) treats as a hard
+  constraint, overridable per region in the manual review workflow
+  below. Regions on the same layer sew nearest-first.
 
 ### Selectable fill styles
 
@@ -178,8 +179,9 @@ Two real, user-reported issues worth knowing about when digitizing text:
   size.** A PNG/JPG without real DPI metadata (most screenshots and web
   exports) falls back to an assumed 96 DPI (`src/io_/load.py`) — which
   can make the tool measure a design as much smaller than you actually
-  intend. If you hit a "minimum cap height" rejection on an image that
-  looks normal-sized to you, this is almost always why: give an
+  intend. If you hit a "minimum feature size" rejection on an image that
+  looks normal-sized to you, this is almost always why (the rejection
+  itself now says what height would clear the floor): give an
   explicit `--width-mm`/`--height-mm` (CLI) or "Finished size" (web UI)
   for the actual physical size you want, rather than trial-and-error
   guessing at the source size. This now works correctly even from a
@@ -311,7 +313,76 @@ submission rather than partially applying it. See `src/jobs.py` for how
 a job's corrections persist between requests and `src/review/rebuild.py`
 for the rebuild itself.
 
+### Sewability audit, sew order, and the small-feature policy
+
+Every digitize result carries a **sewability audit** (`src/validate/audit.py`,
+`result["audit"]`, shown on the web UI's result page): what a production
+digitizer would reject the file for, measured on the exported command
+stream rather than eyeballed off a preview -- trims, jumps and longest
+jump, thread sewn across open fabric outside every region, the stitch-
+length distribution against the 0.3mm machine minimum and 7mm practical
+maximum, each region's top-stitch density against the fabric preset's
+own target, regions under the size floor, run time and thread use.
+
+```bash
+python -m testbench.audit_fixtures               # one comparable table over every fixture
+python -m testbench.audit_fixtures --acceptance  # the MVP bar, pass/fail per fixture
+```
+
+The audit is the before/after instrument for anything that touches
+stitch generation or pathing. It found, and the fixes are measured by it:
+
+- **Satin was stitched at 2-4x the preset's density.** A pixel skeleton
+  steps in 45-degree increments; offsetting rails along its jagged
+  normals turned a 34mm column into 150mm of rail zigzag, and stitch
+  count followed rail length. The centerline is now smoothed over about
+  one width before rails are offset (`src/regions/medial.py`).
+- **Every output carried sub-0.3mm stitches** (2,000 on the cartoon face):
+  `resample_path` kept every pixel-resolution vertex as a needle point.
+  Stitches are now placed by arc length, corners kept only where the
+  path genuinely turns, and the export refuses to write a stitch under
+  the machine minimum however it arrived (`src/stitches/running.py`,
+  `src/io_/export.py`).
+- **Sew order** (`src/pathing/order.py`): fill colors first (largest
+  first), outline colors last; each element finishes (underlay, top
+  stitching, border) before the next starts; the nearest free element
+  sews next; and a branching satin network -- a letter with a crossbar,
+  connected line art -- sews as one continuous pass, travelling down each
+  branch and satining back, so nothing inside it is ever trimmed
+  (`src/stitches/satin_network.py`). A word's trims went 17 -> 5; the
+  cartoon face's 116 -> 64 with jump travel 5.4m -> 2.4m. The summary
+  reports `color_sew_order`.
+- **Split satin** past the 7mm maximum and **pull compensation on fills**
+  (rows extend along their direction by the preset's amount, as satin
+  rails always have).
+
+The **small-feature policy** (`src/validate/features.py`) replaces the
+bare-number rejection: the size floor is judged on a feature's overall
+size (not its height alone), the rejection says the design height that
+clears it, and a forced run lists every region that cannot render at
+this size with numeric remedies -- scale to X mm, drop it (it merges
+into whatever surrounds it), or for a fill squeezed thin by what sits
+inside it, drop those instead. Nothing is applied on its own: a drop is
+a per-region choice on the review page (`RegionOverride.drop`), recorded
+like any other correction, and filling the hole the dropped region sat in.
+
 ### Known limitations
+
+- **Satin over-density where strokes meet.** A letter's stroke branches
+  each get a full column, and they overlap at the junction; the audit
+  still reports a few short letters (an "e" at 6mm cap height) and
+  small closed outlines at ~1.5x the preset's density. A human digitizer
+  trims the branch ends back at the junction by hand.
+- **Trims inside multi-part fills.** A fill broken up by holes (a face
+  around its eyes) is sewn run by run; runs more than 6mm apart still
+  trim. Real digitizers travel between them under a later-sewn region
+  or along the edge, which is not done here.
+- **No short-stitch thinning on tight satin curves.** Rails are resampled
+  by arc length independently, which avoids inner-rail bunching at the
+  cost of slightly skewed crossings on tight curves. Nothing measurable
+  by the audit; needs a sew-out to judge.
+- **SVG paint order is not captured** as `z_order`; every SVG region
+  sits on one layer and sews nearest-first.
 
 - **Raster preprocessing is minimal.** There's no EXIF auto-orientation,
   no alpha/GrabCut-based background separation beyond the existing
@@ -374,6 +445,7 @@ scripts\verify.bat
 ```bash
 pytest
 ./run_tests.sh   # full suite + batch digitize over testbench/inputs/
+python -m testbench.audit_fixtures --acceptance   # the MVP bar, per fixture
 ```
 
 ### Physical validation
