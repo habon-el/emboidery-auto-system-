@@ -362,6 +362,44 @@ def _stitch_player_html(job_id: str) -> str:
 {js}"""
 
 
+def _feature_issues_html(result: dict, job_id: str) -> str:
+    """The small-feature report (src/validate/features.py): every
+    region that cannot render at this size, with its numeric remedies.
+    Nothing is applied from here -- dropping a region is a choice made
+    per region on the review page."""
+    issues = result.get("feature_issues") or []
+    if not issues:
+        return ""
+    items = "".join(f"<li>{i['message']}</li>" for i in issues)
+    return f"""
+<div class="card error" style="margin-top:12px;">
+  <p><b>{len(issues)} feature(s) cannot render at this size.</b> The file was still
+  written; these are what a machine can't reproduce and what would fix each one.
+  Nothing has been simplified for you -- to drop a feature, mark it on the
+  <a href="/review/{job_id}">review page</a>.</p>
+  <ul style="margin:8px 0 0 18px;">{items}</ul>
+</div>"""
+
+
+def _sewability_html(result: dict) -> str:
+    """One line of what the sewability audit measured, and its
+    rejection list if any (src/validate/audit.py)."""
+    a = result.get("audit")
+    if not a:
+        return ""
+    problems = "".join(f"<li>{p}</li>" for p in a["problems"])
+    problems_html = (f'<ul style="margin:6px 0 0 18px;">{problems}</ul>' if problems
+                     else '<p style="margin:6px 0 0;color:#2e7d32;">No sewability problems found.</p>')
+    return f"""
+<details class="region-details" style="margin-top:12px;">
+  <summary>Sewability audit: {a['trim_count']} trims, {a['jump_count']} jumps
+  ({a['total_jump_mm']:.0f}mm, longest {a['longest_jump_mm']:.0f}mm),
+  {a['stitches_below_min']} stitches under the machine minimum,
+  {a['stitches_above_max']} over the maximum, {a['thread_length_mm'] / 1000:.1f}m of thread</summary>
+  {problems_html}
+</details>"""
+
+
 def _analysis_summary_html(result: dict) -> str:
     """Read-only view of the Multi-Region Illustration Digitization
     milestone's analysis summary (item 11) -- the counts panel plus a
@@ -377,9 +415,13 @@ def _analysis_summary_html(result: dict) -> str:
         cls = "needs-review" if r["needs_review"] else ""
         delta_note = (f" (Δ{r['thread_delta_e']:.1f})" if r["thread_delta_e"] > 0.5 else "")
         texture = "yes" if r["texture_zone"] else "&ndash;"
+        chip = ('<span class="chip" style="background:#777;">dropped</span>' if r.get("dropped")
+                else f'<span class="chip {r["stitch_type"]}">{r["stitch_type"]}</span>')
+        if r.get("feature_issue"):
+            chip += ' <span title="cannot render at this size -- see the small-feature report">⚠️ size</span>'
         return f"""<tr class="{cls}">
   <td>{r['id']}</td>
-  <td><span class="chip {r['stitch_type']}">{r['stitch_type']}</span></td>
+  <td>{chip}</td>
   <td><span class="thread-dot" style="background:{r['thread_rgb_hex']};"></span>{r['thread_name']}{delta_note}</td>
   <td>{r['confidence']:.2f}</td>
   <td>{texture}</td>
@@ -447,6 +489,14 @@ def _region_form_html(region_meta: dict, existing: dict) -> str:
         opt(v, label, trim_str) for v, label in
         [("", "unchanged (automatic)"), ("on", "force a cut here"), ("off", "never cut here")])
 
+    drop_val = existing.get("drop")
+    drop_str = "" if drop_val is None else ("on" if drop_val else "off")
+    drop_options = "".join(
+        opt(v, label, drop_str) for v, label in
+        [("", "keep (stitch it)"), ("on", "drop -- merge into what surrounds it"), ("off", "keep")])
+    issue_html = (f'<p class="warn" style="margin:0 0 8px;">⚠️ {region_meta["feature_issue"]}</p>'
+                  if region_meta.get("feature_issue") else "")
+
     def numval(key):
         v = existing.get(key)
         return "" if v is None else v
@@ -466,9 +516,11 @@ def _region_form_html(region_meta: dict, existing: dict) -> str:
     return f"""
 <details class="region-form" id="form-{rid}"{open_attr}>
   <summary>{rid} <span class="chip {region_meta['stitch_type']}">{region_meta['stitch_type']}</span>
+    {'<span class="chip" style="background:#777;">dropped</span>' if region_meta.get('dropped') else ''}
     {corrected_chip}
   </summary>
   <p style="font-size:0.82rem;color:#666;margin:6px 0 0;">{region_meta['reason']}</p>
+  {issue_html}
   <div class="correction-grid">
     <label>Stitch type
       <select name="{rid}::stitch_type">{stitch_options}</select>
@@ -493,6 +545,9 @@ def _region_form_html(region_meta: dict, existing: dict) -> str:
     </label>
     <label>Trim (scissor cut) before this region
       <select name="{rid}::force_trim">{force_trim_options}</select>
+    </label>
+    <label>Drop this region
+      <select name="{rid}::drop">{drop_options}</select>
     </label>
     <label>Border width (mm)
       <input type="number" step="any" min="0" name="{rid}::border_width_mm" value="{numval('border_width_mm')}" placeholder="unchanged">
@@ -519,9 +574,13 @@ def _review_page_html(job_id: str, spec: JobSpec, result: dict,
     rows = []
     for r in result["regions"]:
         cls = "region-row needs-review" if r["needs_review"] else "region-row"
+        chip = ('<span class="chip" style="background:#777;">dropped</span>' if r.get("dropped")
+                else f'<span class="chip {r["stitch_type"]}">{r["stitch_type"]}</span>')
+        if r.get("feature_issue"):
+            chip += ' <span title="cannot render at this size -- see the small-feature report">⚠️ size</span>'
         rows.append(f"""<tr class="{cls}" onclick="location.hash='form-{r['id']}'">
   <td>{r['id']}</td>
-  <td><span class="chip {r['stitch_type']}">{r['stitch_type']}</span></td>
+  <td>{chip}</td>
   <td><span class="thread-dot" style="background:{r['thread_rgb_hex']};"></span>{r['thread_name']}</td>
   <td>{r['confidence']:.2f}</td>
   <td>{'yes' if r['corrected'] else '&ndash;'}</td>
@@ -540,6 +599,7 @@ def _review_page_html(job_id: str, spec: JobSpec, result: dict,
   <p class="stat"><b>{FILL_STYLE_LABELS[spec.default_fill_style]}</b>default fill style</p>
   <p class="stat"><b>{'per shape' if spec.default_fill_angle_deg is None else f'{spec.default_fill_angle_deg:g}&deg;'}</b>fill direction</p>
   {_analysis_summary_html_bar_only(result)}
+  {_feature_issues_html(result, job_id)}
 
   <div class="preview-frame">
     <img class="preview" src="/outputs/{job_id}/design_preview.png?v={len(spec.corrections)}" alt="Stitch preview">
@@ -667,6 +727,8 @@ def _run_and_render(job_id: str, input_path: str, fabric: str, border: float,
   <p class="stat"><b>{FILL_STYLE_LABELS[fill_style]}</b>fill style</p>
   <p class="stat"><b>{'per shape' if fill_angle_deg is None else f'{fill_angle_deg:g}&deg;'}</b>fill direction</p>
   {warnings_html}
+  {_feature_issues_html(result, job_id)}
+  {_sewability_html(result)}
   {_analysis_summary_html(result)}
   <a class="review-link" href="/review/{job_id}">Review &amp; correct regions &rarr;</a>
   <div style="margin-top:16px;">

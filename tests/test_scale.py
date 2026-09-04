@@ -60,8 +60,13 @@ def test_scaled_design_survives_full_pipeline_and_pes_roundtrip(tmp_path):
     plan = StitchPlan(blocks=order_by_color_then_distance(blocks), colors=rs.colors)
 
     minx, miny, maxx, maxy = plan.bounds_mm()
-    assert (maxx - minx) == pytest.approx(80.0, abs=0.05)
-    assert (maxy - miny) == pytest.approx(80.0, abs=0.05)
+    # The stitched footprint is deliberately a hair wider than the
+    # drawn 80mm: fill rows extend along their direction by the
+    # preset's pull compensation (src/stitches/fill.py's
+    # pull_compensate), the same allowance satin has always had.
+    slack = 0.05 + get_preset("twill").pull_compensation_mm
+    assert (maxx - minx) == pytest.approx(80.0, abs=slack)
+    assert (maxy - miny) == pytest.approx(80.0, abs=slack)
 
     from src.io_.export import write_pattern
     paths = write_pattern(plan, str(tmp_path / "resized"))

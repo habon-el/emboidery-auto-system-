@@ -6,11 +6,12 @@ turn into actual STITCH/JUMP/TRIM/COLOR_CHANGE commands. No format I/O of
 our own -- pyembroidery owns the DST/PES bytes (Section 3/9).
 """
 import math
+from dataclasses import replace
 
 import pyembroidery as pe
 
 from src.pathing.route import needs_jump, needs_trim
-from src.stitches.model import StitchPlan
+from src.stitches.model import MIN_STITCH_LENGTH_MM, StitchPlan
 from .units import mm_to_units
 
 # A tie ("lock") stitch: a tiny there-and-back needle penetration right
@@ -38,14 +39,17 @@ def _emit_tie_out(p: pe.EmbPattern, prev_point: tuple[float, float],
     """A tiny there-and-back stitch right at a cut point, anchoring the
     thread immediately before a TRIM: backtrack a hair along the
     direction stitching was already traveling, then return to the exact
-    point that's about to be cut. Clamped to at most half that segment's
-    own length so the lock stitch never overshoots past the previous
-    real stitch point on an already-tiny block."""
+    point that's about to be cut. Clamped to that segment's own length
+    so the lock stitch never overshoots past the previous real stitch
+    point on an already-tiny block -- and no shorter, since every
+    segment reaching here is at least the machine minimum (see
+    _sewable_points) and a lock stitch under it would itself be the
+    thread-break it exists to prevent."""
     unit = _unit_vector(prev_point, cut_point)
     if unit is None:
         return
     seg_len = math.hypot(cut_point[0] - prev_point[0], cut_point[1] - prev_point[1])
-    t = min(TIE_STITCH_LENGTH_MM, seg_len / 2)
+    t = min(TIE_STITCH_LENGTH_MM, seg_len)
     if t <= 0:
         return
     ux, uy = unit
@@ -64,7 +68,7 @@ def _emit_tie_in(p: pe.EmbPattern, entry_point: tuple[float, float],
     if unit is None:
         return
     seg_len = math.hypot(next_point[0] - entry_point[0], next_point[1] - entry_point[1])
-    t = min(TIE_STITCH_LENGTH_MM, seg_len / 2)
+    t = min(TIE_STITCH_LENGTH_MM, seg_len)
     if t <= 0:
         return
     ux, uy = unit
@@ -73,9 +77,55 @@ def _emit_tie_in(p: pe.EmbPattern, entry_point: tuple[float, float],
     p.add_stitch_absolute(pe.STITCH, *mm_to_units_pt(entry_point))
 
 
+def _sewable_points(points: list[tuple[float, float]],
+                    continuing_from: tuple[float, float] | None = None
+                    ) -> list[tuple[float, float]]:
+    """The last line of defence for the machine minimum: drop any
+    needle point closer than MIN_STITCH_LENGTH_MM to the one before
+    it. Every generator upstream already respects the floor (see
+    src/stitches/running.py); this catches the residue -- a satin
+    crossing on a column narrower than the floor, a fill row shorter
+    than it -- so a file can never leave here with a stitch that jams
+    the needle in its own thread. The block's final point is kept in
+    preference to the one before it, so a block still ends where it
+    should.
+
+    continuing_from is the needle's current position when this block
+    sews straight on from the previous one with no jump between them
+    (a fill's next row, a satin branch starting where the last one
+    ended): the block's own first point is then measured against it
+    too, since stitching it again from 0mm away is the same 0mm
+    stitch as a duplicate inside a run."""
+    kept: list[tuple[float, float]] = []
+    last_needle = continuing_from
+    for p in points:
+        if last_needle is None or math.hypot(p[0] - last_needle[0], p[1] - last_needle[1]) >= MIN_STITCH_LENGTH_MM - 1e-9:
+            kept.append(p)
+            last_needle = p
+    if not kept:
+        return kept
+    last = points[-1]
+    if kept[-1] != last:
+        before = kept[-2] if len(kept) >= 2 else continuing_from
+        if before is not None and math.hypot(last[0] - before[0], last[1] - before[1]) >= MIN_STITCH_LENGTH_MM - 1e-9:
+            kept[-1] = last
+    return kept
+
+
 def stitch_plan_to_pattern(plan: StitchPlan) -> pe.EmbPattern:
     p = pe.EmbPattern()
-    for color in plan.colors:
+    # The file's thread list is read back positionally: each
+    # COLOR_CHANGE advances to the next thread. So threads go in in
+    # the order the colors actually sew (src/pathing/order.py's
+    # color_sew_order puts fills before outlines, which need not be
+    # plan.colors order), with any color that never sews appended
+    # after so every index still resolves.
+    sew_order: list[int] = []
+    for block in plan.blocks:
+        if not block.is_empty() and block.color_index not in sew_order:
+            sew_order.append(block.color_index)
+    for idx in sew_order + [i for i in range(len(plan.colors)) if i not in sew_order]:
+        color = plan.colors[idx]
         # add_thread(name) tries to parse the string as a color and falls
         # back to black for a plain label like "color 1" -- build a real
         # EmbThread from the actual RGB so the file's color list (and the
@@ -91,6 +141,9 @@ def stitch_plan_to_pattern(plan: StitchPlan) -> pe.EmbPattern:
     for block in plan.blocks:
         if block.is_empty():
             continue
+        block = replace(block, points_mm=_sewable_points(block.points_mm))
+        if block.is_empty():
+            continue
 
         # True once this block's transition has actually cut the thread
         # (a color change and/or the distance/force_trim decision below)
@@ -99,6 +152,7 @@ def stitch_plan_to_pattern(plan: StitchPlan) -> pe.EmbPattern:
         # color-change trim immediately followed by a from-here
         # distance-trim doesn't tie out twice for the same cut.
         trimmed_this_transition = False
+        jumped = False
 
         if cur_color is not None and block.color_index != cur_color:
             _emit_tie_out(p, prev_block_points[-2], prev_block_points[-1])
@@ -108,7 +162,18 @@ def stitch_plan_to_pattern(plan: StitchPlan) -> pe.EmbPattern:
         cur_color = block.color_index
 
         start = block.points_mm[0]
-        if cur_pos is not None:
+        if cur_pos is not None and trimmed_this_transition:
+            # The color change above already cut the thread. The needle
+            # still has to get to the new color's first point, and with
+            # nothing to drag it does so as a plain jump however short
+            # the gap -- never a second TRIM (that double-counted every
+            # color change as two trims) and never a stitch (a 1mm
+            # "stitch" from the old color's last point would tie the
+            # new thread to the wrong place).
+            if math.hypot(start[0] - cur_pos[0], start[1] - cur_pos[1]) > 0:
+                p.add_stitch_absolute(pe.JUMP, *mm_to_units_pt(start))
+                jumped = True
+        elif cur_pos is not None:
             gap = math.hypot(start[0] - cur_pos[0], start[1] - cur_pos[1])
             # force_trim_before (a manual region correction -- see
             # src/review/corrections.py's force_trim) overrides the
@@ -120,13 +185,14 @@ def stitch_plan_to_pattern(plan: StitchPlan) -> pe.EmbPattern:
             should_trim = (block.force_trim_before if block.force_trim_before is not None
                            else needs_trim(gap))
             if should_trim:
-                if not trimmed_this_transition:
-                    _emit_tie_out(p, prev_block_points[-2], prev_block_points[-1])
+                _emit_tie_out(p, prev_block_points[-2], prev_block_points[-1])
                 p.add_stitch_absolute(pe.TRIM, *mm_to_units_pt(cur_pos))
                 p.add_stitch_absolute(pe.JUMP, *mm_to_units_pt(start))
                 trimmed_this_transition = True
+                jumped = True
             elif needs_jump(gap):
                 p.add_stitch_absolute(pe.JUMP, *mm_to_units_pt(start))
+                jumped = True
 
         # Only a genuine thread cut gets a tie-in -- a plain jump (no
         # trim) is still the same physically continuous thread, so
@@ -138,11 +204,18 @@ def stitch_plan_to_pattern(plan: StitchPlan) -> pe.EmbPattern:
         if trimmed_this_transition:
             _emit_tie_in(p, block.points_mm[0], block.points_mm[1])
             points_to_stitch = block.points_mm[1:]
+        elif not jumped and cur_pos is not None:
+            # Sewing straight on from the previous block: its first
+            # point may coincide with where the needle already is.
+            points_to_stitch = _sewable_points(block.points_mm, continuing_from=cur_pos)
+            if not points_to_stitch:
+                continue
 
         for point in points_to_stitch:
             p.add_stitch_absolute(pe.STITCH, *mm_to_units_pt(point))
-        cur_pos = block.points_mm[-1]
-        prev_block_points = block.points_mm
+        cur_pos = points_to_stitch[-1] if points_to_stitch else block.points_mm[-1]
+        prev_block_points = (block.points_mm if len(points_to_stitch) < 2
+                             else points_to_stitch)
 
     p.end()
     return p

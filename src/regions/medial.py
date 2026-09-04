@@ -300,6 +300,50 @@ def _walk_skeleton(coords_px: list[tuple[int, int]]) -> list[int]:
     return [index_of[c] for c in path]
 
 
+# The centerline smoothing window, as a multiple of the stroke's own
+# width. A pixel skeleton only ever steps in 45-degree increments, so
+# its local direction flips by up to 45 degrees from one pixel to the
+# next; offsetting rails by half the width along those normals swings
+# each rail point a millimetre or more either side of where the edge
+# really is. On the satin bar fixture that inflated a 34mm rail to
+# 150mm of zigzag, so the column got 4x the requested stitch density
+# (needle breakage) with a visibly ragged edge. Smoothing over about
+# one width's worth of pixels takes the staircase out while keeping
+# any genuine bend of the stroke, which is longer than that by
+# definition (a stroke can't turn tighter than its own width).
+SMOOTH_WINDOW_WIDTHS = 1.0
+SMOOTH_WINDOW_MIN_PTS = 3
+SMOOTH_WINDOW_MAX_PTS = 15
+
+
+def _smooth_path(pts: list[Point], widths_mm: list[float], closed: bool,
+                  res_mm: float) -> tuple[list[Point], list[float]]:
+    """Centred moving average over the skeleton points and their
+    widths. An open path keeps its two endpoints exactly (a stroke
+    must start and end where the shape does); a closed ring wraps."""
+    n = len(pts)
+    if n < 3:
+        return list(pts), list(widths_mm)
+    avg_w = sum(widths_mm) / n
+    half = int(round(avg_w * SMOOTH_WINDOW_WIDTHS / res_mm / 2))
+    half = max((SMOOTH_WINDOW_MIN_PTS - 1) // 2, min((SMOOTH_WINDOW_MAX_PTS - 1) // 2, half))
+    out_pts: list[Point] = []
+    out_w: list[float] = []
+    for i in range(n):
+        if closed:
+            idx = [(i + k) % n for k in range(-half, half + 1)]
+        else:
+            # Shrink the window symmetrically near the ends so the
+            # endpoints themselves stay put and the path doesn't
+            # retreat from the stroke's tips.
+            h = min(half, i, n - 1 - i)
+            idx = list(range(i - h, i + h + 1))
+        out_pts.append((sum(pts[j][0] for j in idx) / len(idx),
+                        sum(pts[j][1] for j in idx) / len(idx)))
+        out_w.append(sum(widths_mm[j] for j in idx) / len(idx))
+    return out_pts, out_w
+
+
 def _offset_rails(pts: list[Point], widths_mm: list[float], closed: bool
                    ) -> tuple[list[Point], list[Point]]:
     """Offset a centerline into two satin rails, perpendicular to the
@@ -442,6 +486,32 @@ class MedialAxisResult:
                 out.append(aspect)
         return out
 
+    def branch_columns(self) -> list[tuple[list[Point], list[float], list[Point], list[Point]]]:
+        """Every satin column this shape sews as: (centerline points,
+        widths, rail_a, rail_b) per stroke -- the same strokes
+        branch_rails() returns rails for, with their centerlines kept
+        so src/stitches/satin_network.py can travel along a branch
+        before satining it and find where branches meet."""
+        kept = []
+        covered_px = 0
+        for points, widths in self.branches:
+            if len(points) < 2 or not widths:
+                continue
+            length = sum(math.hypot(b[0] - a[0], b[1] - a[1])
+                         for a, b in zip(points, points[1:]))
+            avg_w = sum(widths) / len(widths)
+            if avg_w > 0 and length / avg_w < MIN_BRANCH_LENGTH_OVER_WIDTH:
+                continue                      # a junction stub, not a stroke
+            rail_a, rail_b = _offset_rails(points, widths, closed=False)
+            if len(rail_a) >= 2:
+                kept.append((points, widths, rail_a, rail_b))
+                covered_px += len(points)
+
+        if not kept or covered_px <= len(self.path_points_mm):
+            rail_a, rail_b = self.rails()
+            return [(self.path_points_mm, self.widths_mm, rail_a, rail_b)]
+        return kept
+
     def branch_rails(self) -> list[tuple[list[Point], list[Point]]]:
         """One satin rail pair per stroke in the skeleton. For a simple
         stroke that's a single pair identical to rails(); for a
@@ -457,24 +527,7 @@ class MedialAxisResult:
         # dropped (a rotated satin bar decomposed into 78 pieces, and
         # keeping only the few valid ones left most of the bar bare).
         # Comparing the two directly is what keeps both cases whole.
-        kept = []
-        covered_px = 0
-        for points, widths in self.branches:
-            if len(points) < 2 or not widths:
-                continue
-            length = sum(math.hypot(b[0] - a[0], b[1] - a[1])
-                         for a, b in zip(points, points[1:]))
-            avg_w = sum(widths) / len(widths)
-            if avg_w > 0 and length / avg_w < MIN_BRANCH_LENGTH_OVER_WIDTH:
-                continue                      # a junction stub, not a stroke
-            rail_a, rail_b = _offset_rails(points, widths, closed=False)
-            if len(rail_a) >= 2:
-                kept.append((rail_a, rail_b))
-                covered_px += len(points)
-
-        if not kept or covered_px <= len(self.path_points_mm):
-            return [self.rails()]
-        return kept
+        return [(rail_a, rail_b) for _, _, rail_a, rail_b in self.branch_columns()]
 
     def rails(self) -> tuple[list[Point], list[Point]]:
         """Synthetic satin rails offset perpendicular to the skeleton by
@@ -521,11 +574,12 @@ def compute_medial_axis(polygon: Polygon, res_mm: float = RASTER_RES_MM
                       and max(abs(ordered_coords[0][0] - ordered_coords[-1][0]),
                               abs(ordered_coords[0][1] - ordered_coords[-1][1])) <= 1)
 
-    def to_mm(coords):
-        return ([(ox + x * res_mm, oy + y * res_mm) for x, y in coords],
-                [distance[y, x] * 2 * res_mm for x, y in coords])
+    def to_mm(coords, closed):
+        pts = [(ox + x * res_mm, oy + y * res_mm) for x, y in coords]
+        widths = [distance[y, x] * 2 * res_mm for x, y in coords]
+        return _smooth_path(pts, widths, closed, res_mm)
 
-    path_points_mm, widths_mm = to_mm(ordered_coords)
-    branches = [to_mm(b) for b in _split_into_branches(coords_px)]
+    path_points_mm, widths_mm = to_mm(ordered_coords, is_closed_loop)
+    branches = [to_mm(b, False) for b in _split_into_branches(coords_px)]
     return MedialAxisResult(path_points_mm, widths_mm, total_skeleton_length_mm,
                              is_closed_loop, branches, len(coords_px))

@@ -17,7 +17,10 @@ from src.stitches.shapes import DEMO_THREAD, build_demo_blocks
 # Golden values for the M0 demo circle on the twill preset. A tolerance
 # window rather than an exact match, since fill point count is sensitive
 # to floating point row-walking, not to anything semantically wrong.
-EXPECTED_STITCH_COUNT = 910
+# Re-centred from 910 when the perimeter underlay stopped keeping every
+# one of the circle polygon's vertices as a needle point (sub-minimum
+# stitches -- see src/stitches/running.py); the fill itself is unchanged.
+EXPECTED_STITCH_COUNT = 655
 STITCH_COUNT_TOLERANCE = 40
 EXPECTED_RADIUS_MM = 15.0
 BOUNDS_TOLERANCE_MM = 0.5

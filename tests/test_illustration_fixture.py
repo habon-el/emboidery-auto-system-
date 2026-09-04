@@ -37,12 +37,22 @@ def test_hole_is_preserved_as_a_true_polygon_hole():
     assert any(len(r.polygon.interiors) > 0 for r in rs.regions)
 
 
-def test_z_order_is_assigned_in_draw_order():
+def test_z_order_is_one_layer_per_color():
+    """Raster regions of one color come from mutually-exclusive pixel
+    masks and can never overlap, so they share a layer; layers follow
+    color order. (Each region used to get its own slot in contour-
+    discovery order, which forced pathing to sew a word's letters in
+    whatever order the contour finder met them -- see
+    src/pathing/order.py.)"""
     _ensure_fixture()
     rs = load_and_extract_regions(INPUT, strict=False)
     z_orders = [r.z_order for r in rs.regions]
     assert z_orders == sorted(z_orders)
-    assert len(set(z_orders)) == len(z_orders)  # each region gets a distinct slot
+    by_color = {}
+    for r in rs.regions:
+        by_color.setdefault(r.color_index, set()).add(r.z_order)
+    assert all(len(layers) == 1 for layers in by_color.values())
+    assert len(set(z_orders)) == len(by_color)
 
 
 def test_thin_swoosh_is_classified_as_line_art_running_stitch():

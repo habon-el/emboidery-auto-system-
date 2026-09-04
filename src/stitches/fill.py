@@ -28,8 +28,9 @@ import math
 
 from shapely import affinity
 from shapely.geometry import LineString, Polygon
+from shapely.ops import unary_union
 
-from .model import Point
+from .model import MIN_STITCH_LENGTH_MM, Point
 from .running import resample_path
 
 # How far a segment-to-segment connector may stray outside the shape
@@ -83,6 +84,14 @@ def _runs_from_segments(segments_rot: list[list[Point]], angle_deg: float, centr
     is (Section 9: don't fake it -- src/pathing/route.py inserts the
     real JUMP/TRIM between runs at export time).
     """
+    # A row segment shorter than one legal stitch (a scan row clipping
+    # the very tip of a corner) can't be sewn as anything but a thread-
+    # breaking sub-minimum stitch; dropping it leaves a sliver a
+    # fraction of a mm wide unstitched at a boundary the next row
+    # covers anyway.
+    segments_rot = [seg for seg in segments_rot
+                    if math.hypot(seg[-1][0] - seg[0][0], seg[-1][1] - seg[0][1])
+                    >= MIN_STITCH_LENGTH_MM]
     if not segments_rot:
         return []
 
@@ -108,13 +117,47 @@ def _runs_from_segments(segments_rot: list[list[Point]], angle_deg: float, centr
     return runs
 
 
+def pull_compensate(polygon: Polygon, angle_deg: float,
+                    pull_compensation_mm: float) -> Polygon:
+    """The polygon extended by pull_compensation_mm along the stitch
+    direction (half each way), the way src/stitches/satin.py's _widen
+    pushes a satin column's rails apart.
+
+    A tensioned stitch pulls the fabric under it inward along its own
+    axis, so a shape filled with rows at angle_deg sews narrower in
+    that direction than it was drawn -- a filled circle comes out as
+    an oval, and the fill stops short of a satin border that was
+    supposed to overlap it. Fills had no compensation at all (satin
+    did). The extension is a Minkowski sum with a segment along the
+    stitch direction, built as the union of the shape and two copies
+    shifted half the compensation each way -- exact for any shape
+    wider than the compensation, i.e. every shape here; holes shrink
+    by the same amount, as they should."""
+    if pull_compensation_mm <= 0:
+        return polygon
+    dx = math.cos(math.radians(angle_deg)) * pull_compensation_mm / 2
+    dy = math.sin(math.radians(angle_deg)) * pull_compensation_mm / 2
+    grown = unary_union([affinity.translate(polygon, -dx, -dy), polygon,
+                         affinity.translate(polygon, dx, dy)])
+    if grown.geom_type != "Polygon":
+        # A sliver of a multi-part shape can, in theory, come back as
+        # several pieces; keep the one that is the shape.
+        grown = max(grown.geoms, key=lambda g: g.area)
+    return grown
+
+
 def generate_fill(polygon: Polygon, angle_deg: float, row_spacing_mm: float,
-                   stitch_length_mm: float) -> list[list[Point]]:
+                   stitch_length_mm: float, pull_compensation_mm: float = 0.0
+                   ) -> list[list[Point]]:
     """Classic tatami fill: return a list of stitchable runs (each a
     list of needle points, mm) filling `polygon`. Almost always a
     single run; more than one when the polygon has holes or is
     otherwise crossed by a row in multiple places.
+
+    pull_compensation_mm extends the rows along their own direction
+    (see pull_compensate); 0 fills the shape exactly as drawn.
     """
+    polygon = pull_compensate(polygon, angle_deg, pull_compensation_mm)
     centroid = polygon.centroid
     rotated = affinity.rotate(polygon, -angle_deg, origin=centroid)
     xmin, ymin, xmax, ymax = rotated.bounds
@@ -140,7 +183,8 @@ def generate_fill(polygon: Polygon, angle_deg: float, row_spacing_mm: float,
 
 
 def generate_brick_fill(polygon: Polygon, angle_deg: float, row_spacing_mm: float,
-                         stitch_length_mm: float) -> list[list[Point]]:
+                         stitch_length_mm: float, pull_compensation_mm: float = 0.0
+                         ) -> list[list[Point]]:
     """Same rows as generate_fill, but every other row's needle points
     are phase-shifted half a stitch length from the row before it --
     like brick coursing, instead of tatami's needle holes lining up
@@ -149,6 +193,7 @@ def generate_brick_fill(polygon: Polygon, angle_deg: float, row_spacing_mm: floa
     fill; the row/angle/hole handling is identical to generate_fill,
     only where each row's points fall differs.
     """
+    polygon = pull_compensate(polygon, angle_deg, pull_compensation_mm)
     centroid = polygon.centroid
     rotated = affinity.rotate(polygon, -angle_deg, origin=centroid)
     xmin, ymin, xmax, ymax = rotated.bounds
@@ -180,7 +225,8 @@ def generate_brick_fill(polygon: Polygon, angle_deg: float, row_spacing_mm: floa
 
 def generate_crosshatch_fill(polygon: Polygon, angle_deg: float, row_spacing_mm: float,
                               stitch_length_mm: float,
-                              second_pass_spacing_scale: float = 1.6
+                              second_pass_spacing_scale: float = 1.6,
+                              pull_compensation_mm: float = 0.0
                               ) -> list[list[Point]]:
     """Two tatami passes at 90 degrees to each other -- denser feel,
     more stable on stretchy fabric. The same technique
@@ -190,9 +236,11 @@ def generate_crosshatch_fill(polygon: Polygon, angle_deg: float, row_spacing_mm:
     directly, not only via texture detection. The second pass defaults
     to wider spacing so total density doesn't roughly double.
     """
-    return (generate_fill(polygon, angle_deg, row_spacing_mm, stitch_length_mm)
+    return (generate_fill(polygon, angle_deg, row_spacing_mm, stitch_length_mm,
+                          pull_compensation_mm)
             + generate_fill(polygon, angle_deg + 90,
-                             row_spacing_mm * second_pass_spacing_scale, stitch_length_mm))
+                             row_spacing_mm * second_pass_spacing_scale, stitch_length_mm,
+                             pull_compensation_mm))
 
 
 def generate_contour_fill(polygon: Polygon, row_spacing_mm: float,

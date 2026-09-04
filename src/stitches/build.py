@@ -11,6 +11,7 @@ from src.stitches.model import (DEFAULT_FILL_STYLE, FILL, FILL_BRICK,
                                  StitchBlock)
 from src.stitches.running import resample_path
 from src.stitches.satin import generate_satin
+from src.stitches.satin_network import sequence_satin_network
 from src.stitches.underlay import fill_underlay, satin_centerline_underlay
 
 
@@ -43,8 +44,17 @@ def build_blocks_for_region(region: Region, classification: Classification,
         # the entire network gets stitched instead of only the one path
         # a single column could trace -- see src/regions/medial.py's
         # _split_into_branches.
+        columns = medial.branch_columns()
+        if len(columns) > 1 and include_underlay and fabric.satin_underlay:
+            # A network: one continuous pass, travelling down each
+            # branch and satining back, so nothing inside the element
+            # is ever jumped or trimmed (src/stitches/satin_network.py).
+            # Needs the centerline underlay to be on -- the outbound
+            # travel *is* that underlay; with underlay off the branches
+            # sew as separate columns below.
+            return sequence_satin_network(columns, fabric, color, eid)
         blocks = []
-        for rail_a, rail_b in medial.branch_rails():
+        for _, _, rail_a, rail_b in columns:
             if include_underlay and fabric.satin_underlay:
                 underlay_pts = satin_centerline_underlay(
                     rail_a, rail_b, fabric.running_stitch_length_mm)
@@ -64,21 +74,27 @@ def build_blocks_for_region(region: Region, classification: Classification,
             region.polygon, fabric.fill_underlay_inset_mm, fabric.running_stitch_length_mm)
         blocks.append(StitchBlock(UNDERLAY_RUN, underlay_pts, color, eid))
 
+    # Pull compensation for fills, as for satin: rows extend along
+    # their own direction by the preset's amount (src/stitches/fill.py's
+    # pull_compensate). Contour fill has no single direction -- its
+    # rings follow the edge -- so it is stitched as drawn.
+    comp = fabric.pull_compensation_mm
     if fill_style == FILL_CONTOUR:
         fill_runs = generate_contour_fill(
             region.polygon, fabric.fill_row_spacing_mm, fabric.fill_stitch_length_mm)
     elif fill_style == FILL_CROSSHATCH:
         fill_runs = generate_crosshatch_fill(
             region.polygon, classification.angle_deg,
-            fabric.fill_row_spacing_mm, fabric.fill_stitch_length_mm)
+            fabric.fill_row_spacing_mm, fabric.fill_stitch_length_mm,
+            pull_compensation_mm=comp)
     elif fill_style == FILL_BRICK:
         fill_runs = generate_brick_fill(
             region.polygon, classification.angle_deg,
-            fabric.fill_row_spacing_mm, fabric.fill_stitch_length_mm)
+            fabric.fill_row_spacing_mm, fabric.fill_stitch_length_mm, comp)
     else:  # FILL_TATAMI, and any unrecognized value falls back to it
         fill_runs = generate_fill(
             region.polygon, classification.angle_deg,
-            fabric.fill_row_spacing_mm, fabric.fill_stitch_length_mm)
+            fabric.fill_row_spacing_mm, fabric.fill_stitch_length_mm, comp)
 
     if region.texture_zone and fill_style in (FILL_TATAMI, FILL_BRICK):
         # A second pass at 90 degrees cross-hatches the fill, giving a
@@ -91,7 +107,7 @@ def build_blocks_for_region(region: Region, classification: Classification,
         # Cross-Hatch is already two-direction on its own.
         fill_runs = fill_runs + generate_fill(
             region.polygon, classification.angle_deg + 90,
-            fabric.fill_row_spacing_mm * 1.6, fabric.fill_stitch_length_mm)
+            fabric.fill_row_spacing_mm * 1.6, fabric.fill_stitch_length_mm, comp)
     blocks.extend(StitchBlock(FILL, run, color, eid) for run in fill_runs)
     if border_width_mm > 0:
         blocks.extend(build_border_blocks(

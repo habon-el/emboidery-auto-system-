@@ -17,7 +17,7 @@ from src.regions.model import DigitizeScopeError
 QUANTIZATION_WARN_ERROR = 10.0
 QUANTIZATION_REJECT_ERROR = 25.0
 
-MIN_FEATURE_HEIGHT_MM = 6.0  # Section 2: text below ~6mm cap height
+MIN_FEATURE_HEIGHT_MM = 6.0  # Section 2: text below ~6mm cap height / any feature under 6mm
 
 
 @dataclass
@@ -47,16 +47,37 @@ def check_color_complexity(mean_quant_error: float) -> ScopeFinding | None:
     return None
 
 
-def check_min_feature_size(region_heights_mm: list[float]
+def feature_sizes_mm(regions) -> list[float]:
+    """Each region's overall size: the longer side of its bounding box.
+    The floor used to be judged on height alone, which rejected a
+    35mm-long horizontal stroke for being 5mm tall while passing a
+    5mm-wide vertical one -- the same stroke, rotated."""
+    return [max(r.polygon.bounds[2] - r.polygon.bounds[0],
+                r.polygon.bounds[3] - r.polygon.bounds[1]) for r in regions]
+
+
+def check_min_feature_size(region_sizes_mm: list[float],
+                            design_height_mm: float | None = None
                             ) -> ScopeFinding | None:
-    tiny = [h for h in region_heights_mm if 0 < h < MIN_FEATURE_HEIGHT_MM]
+    """region_sizes_mm are feature_sizes_mm() of the regions as they
+    will actually be stitched. design_height_mm (the artwork's content
+    height at that size) turns the finding into a remedy: the height
+    the whole design has to be for its smallest feature to clear the
+    floor."""
+    tiny = [h for h in region_sizes_mm if 0 < h < MIN_FEATURE_HEIGHT_MM]
     if not tiny:
         return None
+    factor = MIN_FEATURE_HEIGHT_MM / min(tiny)
+    remedy = (f" Scale the design to at least "
+              f"{design_height_mm * factor:.0f}mm tall ({factor:.1f}x) so the "
+              f"smallest feature reaches {MIN_FEATURE_HEIGHT_MM:.0f}mm, or force-"
+              f"digitize and drop those regions in review (each merges into "
+              f"whatever surrounds it)."
+              if design_height_mm else "")
     return ScopeFinding(
         f"{len(tiny)} region(s) are under the {MIN_FEATURE_HEIGHT_MM}mm "
-        f"minimum cap height (smallest: {min(tiny):.1f}mm). Small text/"
-        f"detail below this size does not digitize reliably (Section 2) "
-        f"-- rejecting rather than producing an unreadable design.",
+        f"minimum feature size (smallest: {min(tiny):.1f}mm). Detail this "
+        f"small does not stitch legibly -- thread is ~0.4mm wide.{remedy}",
         reject=True,
     )
 

@@ -39,6 +39,13 @@ class RegionOverride:
     # standing for this region. Only takes effect if the region ends up
     # FILL-type; harmless (and ignored) otherwise.
     fill_style: str | None = None
+    # Drop this region from the design: it is not stitched, and any
+    # region whose hole it sat in has that hole filled, so the dropped
+    # feature merges into whatever surrounds it. The remedy the small-
+    # feature policy (src/validate/features.py) offers for a feature
+    # that cannot render at the requested size -- offered, never
+    # applied on its own: None leaves the region in, True drops it.
+    drop: bool | None = None
 
     def is_noop(self) -> bool:
         return all(v is None for v in asdict(self).values())
@@ -87,6 +94,7 @@ def parse_region_override(raw: dict) -> RegionOverride:
 
     underlay = _parse_tri_bool(raw, "underlay")
     force_trim = _parse_tri_bool(raw, "force_trim")
+    drop = _parse_tri_bool(raw, "drop")
 
     fill_style = (raw.get("fill_style") or "").strip() or None
     if fill_style and fill_style not in FILL_STYLES:
@@ -116,7 +124,7 @@ def parse_region_override(raw: dict) -> RegionOverride:
     return RegionOverride(stitch_type=stitch_type, angle_deg=angle_deg, density_mm=density_mm,
                            underlay=underlay, border_width_mm=border_width_mm,
                            z_order=z_order, thread_rgb=thread_rgb, force_trim=force_trim,
-                           fill_style=fill_style)
+                           fill_style=fill_style, drop=drop)
 
 
 def parse_correction_form(form: dict, region_ids: set[str]) -> dict[str, "RegionOverride"]:
@@ -164,7 +172,8 @@ def override_from_stored(d: dict) -> RegionOverride:
         density_mm=d.get("density_mm"), underlay=d.get("underlay"),
         border_width_mm=d.get("border_width_mm"), z_order=d.get("z_order"),
         thread_rgb=tuple(thread_rgb) if thread_rgb is not None else None,
-        force_trim=d.get("force_trim"), fill_style=d.get("fill_style"))
+        force_trim=d.get("force_trim"), fill_style=d.get("fill_style"),
+        drop=d.get("drop"))
 
 
 def resolve_override(classification: Classification, fabric: FabricPreset,

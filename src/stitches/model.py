@@ -13,6 +13,19 @@ from dataclasses import dataclass, field
 
 Point = tuple[float, float]
 
+# Machine limits -- the same on every fabric preset, unlike everything
+# in src/params/presets.py. Below MIN a stitch doesn't move the needle
+# clear of its own previous penetration: the thread piles up in one
+# hole and breaks (0.3mm is the industry-standard "short stitch"
+# floor, and also the deliberate size of the tie stitches in
+# src/io_/export.py). Above MAX a single stitch lies loose enough to
+# snag in wear; a digitizer splits satin wider than this. DST's own
+# hard limit is 12.1mm and pyembroidery breaks anything longer into
+# pieces on write, so a stitch past MAX is either a split-satin case
+# or a straight stitch across something it shouldn't cross.
+MIN_STITCH_LENGTH_MM = 0.3
+MAX_STITCH_LENGTH_MM = 7.0
+
 # Stitch block kinds
 RUNNING = "running"
 SATIN = "satin"
@@ -84,6 +97,14 @@ class StitchBlock:
     # doesn't cut the thread first, leaving a float). Set by a manual
     # region correction (src/review/corrections.py's force_trim).
     force_trim_before: bool | None = None
+    # Set when this block is one link of a fixed chain within its
+    # element -- a branching satin network sewn as one continuous
+    # pass (src/stitches/satin_network.py): travel down each branch,
+    # satin back over it. Pathing (src/pathing/order.py) sews a
+    # chain's blocks in this order, unchanged and un-reversed, since
+    # every block starts exactly where the previous one ended. None
+    # (the default) leaves the block free to be re-sequenced.
+    sequence: int | None = None
 
     def is_empty(self) -> bool:
         return len(self.points_mm) < 2

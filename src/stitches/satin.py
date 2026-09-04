@@ -7,7 +7,7 @@ the rail, not a fill row spacing.
 """
 import math
 
-from .model import Point
+from .model import MAX_STITCH_LENGTH_MM, Point
 
 
 def _resample_by_arclength(path: list[Point], n_points: int) -> list[Point]:
@@ -45,6 +45,11 @@ def average_width_mm(rail_a: list[Point], rail_b: list[Point]) -> float:
     ) / n
 
 
+def _length(path: list[Point]) -> float:
+    return sum(math.hypot(x1 - x0, y1 - y0)
+               for (x0, y0), (x1, y1) in zip(path, path[1:]))
+
+
 def _widen(rail_a: Point, rail_b: Point, amount_mm: float
            ) -> tuple[Point, Point]:
     """Push both rail points apart by amount_mm to compensate for pull-in."""
@@ -60,16 +65,45 @@ def _widen(rail_a: Point, rail_b: Point, amount_mm: float
     )
 
 
+def _split_long_stitch(out: list[Point], q: Point, index: int,
+                       max_stitch_mm: float) -> None:
+    """Append q to out, putting intermediate needle points along the
+    way when the stitch from out[-1] to q is longer than the machine
+    maximum ("split satin"). The split points are staggered from one
+    stitch to the next -- a third of the way, halfway, two thirds --
+    so they don't line up into a visible seam down the column, which
+    is what a digitizer's auto-split does. The column keeps its full
+    width; only the single loose span is broken up."""
+    p = out[-1]
+    length = math.hypot(q[0] - p[0], q[1] - p[1])
+    if length > max_stitch_mm:
+        n = math.ceil(length / max_stitch_mm)
+        stagger = ((index % 3) - 1) * 0.3
+        for k in range(1, n):
+            f = min(0.9, max(0.1, (k + stagger) / n))
+            out.append((p[0] + (q[0] - p[0]) * f, p[1] + (q[1] - p[1]) * f))
+    out.append(q)
+
+
 def generate_satin(rail_a: list[Point], rail_b: list[Point],
-                    density_mm: float, pull_compensation_mm: float = 0.0
-                    ) -> list[Point]:
-    """Zigzag stitch points between two rails, resampled to `density_mm`."""
+                    density_mm: float, pull_compensation_mm: float = 0.0,
+                    max_stitch_mm: float = MAX_STITCH_LENGTH_MM) -> list[Point]:
+    """Zigzag stitch points between two rails, resampled to `density_mm`.
+
+    A column wider than max_stitch_mm is sewn as split satin: each
+    crossing gets intermediate penetrations (staggered stitch to
+    stitch) so no single stitch is long enough to snag and loop in
+    wear -- see _split_long_stitch. The twill preset allows columns to
+    12mm; without this every stitch across an 8mm column left the
+    file over the 7mm practical maximum (123 of them on one stroke of
+    the cartoon face)."""
     if len(rail_a) < 2 or len(rail_b) < 2:
         return []
-    rail_len = sum(
-        math.hypot(x1 - x0, y1 - y0)
-        for (x0, y0), (x1, y1) in zip(rail_a, rail_a[1:])
-    )
+    # Stitch spacing is measured down the middle of the column, not
+    # along one rail: on a curve the outer rail is longer than the
+    # inner one, and taking either alone would set the density from
+    # whichever side happened to be passed first.
+    rail_len = (_length(rail_a) + _length(rail_b)) / 2
     n_points = max(2, int(rail_len / density_mm) + 1)
     a = _resample_by_arclength(rail_a, n_points)
     b = _resample_by_arclength(rail_b, n_points)
@@ -77,6 +111,9 @@ def generate_satin(rail_a: list[Point], rail_b: list[Point],
     out: list[Point] = []
     for i in range(n_points):
         pa, pb = _widen(a[i], b[i], pull_compensation_mm / 2)
-        out.append(pa)
-        out.append(pb)
+        for j, point in enumerate((pa, pb)):
+            if out:
+                _split_long_stitch(out, point, 2 * i + j, max_stitch_mm)
+            else:
+                out.append(point)
     return out

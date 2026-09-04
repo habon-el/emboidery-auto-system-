@@ -7,22 +7,26 @@ directly to redo the same work with per-region corrections applied.
 """
 from dataclasses import replace
 
+from shapely.geometry import Polygon
+
 from src.params.classify import classify_region
 from src.params.presets import get_preset
 from src.params.thread_palette import match_thread
-from src.pathing.order import order_by_color_then_distance
+from src.pathing.order import color_sew_order, order_by_color_then_distance
 from src.preview.render import DEFAULT_MARGIN_MM
-from src.regions.model import RegionSet
+from src.regions.model import Region, RegionSet
 from src.regions.pipeline import load_and_extract_regions
 from src.regions.scale import scale_region_set
-from src.regions.scope import apply_findings, check_min_feature_size
+from src.regions.scope import apply_findings, check_min_feature_size, feature_sizes_mm
 from src.report import write_and_report
 from src.review.corrections import RegionOverride, resolve_override
 from src.stitches.build import build_blocks_for_region
 from src.stitches.model import (DEFAULT_FILL_STYLE, FILL, FILL_STYLES, RUNNING,
                                  SATIN, UNIFORM_FILL_ANGLE_DEG, StitchBlock,
                                  StitchPlan, ThreadColor)
+from src.validate.audit import audit_plan, format_audit_summary
 from src.validate.checks import validate_plan
+from src.validate.features import assess_features
 
 # A region classified with confidence below this is close enough to a
 # decision boundary (or, for fill, close enough to the satin thresholds)
@@ -58,8 +62,11 @@ def load_scaled_region_set(input_path: str, force: bool,
         # too-small (or a source that was too small and the requested
         # size doesn't actually fix it) still gets caught -- or
         # forced-past-with-a-warning, exactly like the original check.
-        heights_mm = [r.polygon.bounds[3] - r.polygon.bounds[1] for r in region_set.regions]
-        apply_findings([check_min_feature_size(heights_mm)], warnings, strict=not force)
+        regions = region_set.regions
+        content_height = (max(r.polygon.bounds[3] for r in regions)
+                          - min(r.polygon.bounds[1] for r in regions)) if regions else 0.0
+        apply_findings([check_min_feature_size(feature_sizes_mm(regions), content_height)],
+                       warnings, strict=not force)
 
     return region_set, warnings
 
@@ -144,15 +151,24 @@ def build_and_export(region_set: RegionSet, fabric, out_stem: str,
     Returns write_and_report()'s dict plus:
       "warnings": list[str]
       "summary": {visual_colors_detected, thread_colors_selected,
+                  color_sew_order (thread names, first sewn first),
                   filled_regions, satin_columns, running_stitch_details,
                   texture_zones, warnings_requiring_review}
       "regions": [{id, color_index, z_order, stitch_type, fill_style,
                    angle_deg, reason, confidence, needs_review, redirected_from_satin,
                    texture_zone, texture_confidence, thread_name,
                    thread_code, thread_delta_e, thread_rgb_hex,
-                   corrected, bbox_pct}, ...]
+                   corrected, dropped, feature_issue, bbox_pct}, ...]
       "corrections_applied": sorted list of region_ids that had a
         (non-no-op) correction applied this build.
+      "audit": src/validate/audit.py's SewabilityAudit.to_dict() --
+        trims/jumps/stitch-length/density/size-floor measurements plus
+        a "problems" list of concrete rejection reasons.
+      "feature_issues": src/validate/features.py's FeatureIssue.to_dict()
+        per region that cannot render at this size, each with its
+        numeric remedies (scale to, drop, drop children). Each region's
+        own entry in "regions" carries the message as feature_issue,
+        and "dropped" when a correction dropped it.
     """
     corrections = corrections or {}
 
@@ -164,9 +180,31 @@ def build_and_export(region_set: RegionSet, fabric, out_stem: str,
     color_override_index: dict[str, int] = {}
     next_color_index = len(region_set.colors)
     applied_corrections: list[str] = []
+    classifications_meta_only: list = []
 
-    for region in region_set.regions:
+    # A dropped region (RegionOverride.drop -- a human accepting the
+    # small-feature policy's remedy, see src/validate/features.py) is
+    # not stitched, and merges into whatever surrounds it: any other
+    # region whose hole it sat in has that hole filled before it is
+    # classified and built, so the surrounding fill sews straight over
+    # where the dropped feature was.
+    dropped = [r for r in region_set.regions
+               if corrections.get(r.region_id) is not None and corrections[r.region_id].drop]
+    regions = [_fill_holes_of_dropped(r, dropped) if dropped else r
+               for r in region_set.regions]
+    dropped_ids = {r.region_id for r in dropped}
+
+    for region in regions:
         classification = classify_region(region, fabric)
+        if region.region_id in dropped_ids:
+            # Listed in the region metadata (so review can un-drop it),
+            # built as nothing.
+            classification = replace(classification, reason="dropped by manual correction.")
+            classifications_meta_only.append((region, classification))
+            applied_corrections.append(region.region_id)
+            z_order_by_element[region.region_id] = region.z_order
+            fill_style_by_element[region.region_id] = default_fill_style
+            continue
         if default_fill_angle_deg is not None and classification.stitch_type == FILL:
             # One shared direction for every filled region (see
             # src/stitches/model.py's UNIFORM_FILL_ANGLE_DEG). Applied
@@ -209,6 +247,19 @@ def build_and_export(region_set: RegionSet, fabric, out_stem: str,
 
     ordered = order_by_color_then_distance(all_blocks, z_order_by_element=z_order_by_element)
 
+    # What cannot render at this size, with numeric remedies -- reported
+    # here and in the region metadata, applied only through a human's
+    # RegionOverride.drop (src/validate/features.py).
+    built_regions = [r for r, _ in classifications]
+    content_height = (max(r.polygon.bounds[3] for r in built_regions)
+                      - min(r.polygon.bounds[1] for r in built_regions)) if built_regions else 0.0
+    feature_issues = assess_features(classifications, content_height, fabric)
+    issue_by_region = {issue.region_id: issue for issue in feature_issues}
+    if feature_issues:
+        warnings.append(
+            f"{len(feature_issues)} feature(s) cannot render at this size -- see the "
+            f"small-feature report for what to scale or drop.")
+
     # force_trim (src/review/corrections.py) marks whichever block ends
     # up scheduled *first* for that region -- not necessarily the block
     # that was blocks[0] before pathing, since a region with several
@@ -230,6 +281,7 @@ def build_and_export(region_set: RegionSet, fabric, out_stem: str,
     plan = StitchPlan(blocks=ordered, colors=all_colors)
 
     warnings.extend(validate_plan(plan, fabric, classifications))
+    audit = audit_plan(plan, fabric, classifications, fill_style_by_element)
 
     minx, miny, maxx, maxy = plan.bounds_mm()
     full_w = max(1e-6, (maxx - minx) + 2 * DEFAULT_MARGIN_MM)
@@ -249,11 +301,13 @@ def build_and_export(region_set: RegionSet, fabric, out_stem: str,
     counts = {FILL: 0, SATIN: 0, RUNNING: 0}
     texture_zone_count = 0
     needs_review_count = 0
-    for region, classification in classifications:
-        counts[classification.stitch_type] = counts.get(classification.stitch_type, 0) + 1
+    for region, classification in classifications + classifications_meta_only:
+        is_dropped = region.region_id in dropped_ids
+        if not is_dropped:
+            counts[classification.stitch_type] = counts.get(classification.stitch_type, 0) + 1
         if region.texture_zone:
             texture_zone_count += 1
-        needs_review = classification.confidence < LOW_CONFIDENCE_THRESHOLD
+        needs_review = (not is_dropped) and classification.confidence < LOW_CONFIDENCE_THRESHOLD
         if needs_review:
             needs_review_count += 1
             warnings.append(
@@ -280,12 +334,26 @@ def build_and_export(region_set: RegionSet, fabric, out_stem: str,
             "thread_delta_e": color.thread_delta_e if color else 0.0,
             "thread_rgb_hex": ("#%02x%02x%02x" % color.rgb) if color else "#888888",
             "corrected": region.region_id in applied_corrections,
+            "dropped": is_dropped,
+            "feature_issue": (issue_by_region[region.region_id].message
+                              if region.region_id in issue_by_region else ""),
             "bbox_pct": _bbox_pct(region),
         })
+    # Region order as extracted, so the review page lists them stably
+    # whether or not any were dropped.
+    order_index = {r.region_id: i for i, r in enumerate(regions)}
+    regions_meta.sort(key=lambda m: order_index[m["id"]])
 
+    # The order the thread colors sew in (src/pathing/order.py's
+    # color_sew_order: fills first, outlines last) -- recorded here so
+    # the decision is visible next to everything else the system chose,
+    # not buried in the file.
+    sew_order = [all_colors[i].matched_thread_name or all_colors[i].name
+                 for i in color_sew_order(ordered) if i < len(all_colors)]
     summary = {
         "visual_colors_detected": region_set.raw_color_count,
         "thread_colors_selected": len(all_colors),
+        "color_sew_order": sew_order,
         "filled_regions": counts.get(FILL, 0),
         "satin_columns": counts.get(SATIN, 0),
         "running_stitch_details": counts.get(RUNNING, 0),
@@ -297,8 +365,28 @@ def build_and_export(region_set: RegionSet, fabric, out_stem: str,
         print(f"Warning: {w}")
 
     result = write_and_report(plan, out_stem)
+    print(format_audit_summary(audit))
     result["warnings"] = warnings
     result["summary"] = summary
+    # The sewability audit (src/validate/audit.py): what a production
+    # digitizer would reject this file for, measured on the exported
+    # command stream. Structured, so the web UI and the testbench can
+    # compare runs by number rather than by preview image.
+    result["audit"] = audit.to_dict()
     result["regions"] = regions_meta
     result["corrections_applied"] = sorted(applied_corrections)
+    result["feature_issues"] = [issue.to_dict() for issue in feature_issues]
     return result
+
+
+def _fill_holes_of_dropped(region, dropped: list) -> "Region":
+    """region with any hole that a dropped region sits in filled."""
+    polygon = region.polygon
+    if not polygon.interiors:
+        return region
+    probes = [d.polygon.representative_point() for d in dropped if d is not region]
+    keep = [ring for ring in polygon.interiors
+            if not any(Polygon(ring).contains(probe) for probe in probes)]
+    if len(keep) == len(polygon.interiors):
+        return region
+    return replace(region, polygon=Polygon(polygon.exterior, keep))

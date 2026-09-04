@@ -15,15 +15,22 @@ from testbench.generate_samples import main as generate_samples
 INPUTS = os.path.join(os.path.dirname(__file__), "..", "testbench", "inputs")
 
 # (min_stitches, max_stitches, expected_color_count)
+# Ranges were re-centred when two defects the sewability audit found
+# were fixed (src/validate/audit.py): satin was stitched at 2-4x the
+# preset's density (jagged pixel-skeleton rails -- see
+# src/regions/medial.py's _smooth_path), and every underlay and
+# running-stitch path was sewn as a chain of sub-0.3mm stitches
+# because resample_path kept every pixel-resolution vertex (see
+# src/stitches/running.py). Both inflated stitch counts for the wrong
+# reason; the ranges below bracket the corrected output.
 EXPECTED = {
     "circle_2color.png": (400, 1200, 1),
-    "bar_satin.png": (350, 1200, 1),
+    "bar_satin.png": (150, 600, 1),
     "star_3color.png": (250, 900, 2),
-    # Text comes out as satin columns now, not tatami fill (see
-    # src/params/classify.py's curved-stroke detection). Satin is denser
-    # than fill, so both text fixtures land higher than they used to.
-    "text_sample.png": (250, 800, 1),
-    "text_with_bowls.png": (1100, 2200, 1),
+    # Text comes out as satin columns (see src/params/classify.py's
+    # curved-stroke detection), one column per stroke.
+    "text_sample.png": (150, 600, 1),
+    "text_with_bowls.png": (700, 1800, 1),
     "logo.svg": (700, 2000, 2),
 }
 

@@ -6,7 +6,7 @@ from src.io_.load import load_raster
 from src.regions.model import DigitizeScopeError, RegionSet
 from src.regions.raster_regions import extract_raster_regions
 from src.regions.scope import (apply_findings, check_color_complexity,
-                                check_min_feature_size)
+                                check_min_feature_size, feature_sizes_mm)
 from src.regions.svg_regions import extract_svg_regions
 
 
@@ -63,8 +63,10 @@ def load_and_extract_regions(path: str, dpi_override: float | None = None,
             f"the minimum stitchable area.")
 
     if check_min_size:
-        heights_mm = [r.polygon.bounds[3] - r.polygon.bounds[1] for r in regions]
-        apply_findings([check_min_feature_size(heights_mm)], warnings, strict)
+        content_height = (max(r.polygon.bounds[3] for r in regions)
+                          - min(r.polygon.bounds[1] for r in regions))
+        apply_findings([check_min_feature_size(feature_sizes_mm(regions), content_height)],
+                       warnings, strict)
 
     return RegionSet(regions=regions, colors=colors,
                       width_mm=width_mm, height_mm=height_mm, warnings=warnings,

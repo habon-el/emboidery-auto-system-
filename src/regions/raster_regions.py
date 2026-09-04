@@ -103,7 +103,6 @@ def extract_raster_regions(rgb: np.ndarray, px_per_mm: float
     regions: list[Region] = []
     colors: list[ThreadColor] = []
     color_index = 0
-    z_order = 0
     total_dropped_small = 0
     for label in range(palette.shape[0]):
         if label == bg_label:
@@ -123,14 +122,20 @@ def extract_raster_regions(rgb: np.ndarray, px_per_mm: float
             matched_thread_name=thread.name, matched_thread_code=thread.code,
             thread_delta_e=thread.delta_e))
 
+        # Every region of one color sits on the same layer: raster
+        # regions come from mutually-exclusive per-pixel color masks,
+        # so two of the same color can never overlap and there is
+        # nothing to layer between them. Giving each region its own
+        # z_order (contour discovery order) used to force pathing to
+        # sew a word's letters in whatever order the contour finder
+        # met them -- see src/pathing/order.py.
         for i, (poly, region_px_mask) in enumerate(found):
             texture = detect_texture_zone(rgb, region_px_mask)
             regions.append(Region(
                 polygon=poly, color_index=color_index, source="raster",
-                region_id=f"raster-{label}-{i}", z_order=z_order,
+                region_id=f"raster-{label}-{i}", z_order=color_index,
                 texture_zone=texture.is_texture,
                 texture_confidence=texture.confidence))
-            z_order += 1
         color_index += 1
 
     return regions, colors, mean_error, total_dropped_small, raw_colors, merged_colors
